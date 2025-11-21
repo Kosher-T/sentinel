@@ -27,8 +27,8 @@ jobs:
         run: |
           echo "Starting VFI Model Retraining..."
           echo "Loading new 'Softwood' data..."
-          sleep 2 # Pretending to work
-          echo "Training Epoch 1/5... Loss: 0.98"
+          sleep 2 # Pretending to work 👀
+          echo "Training Epoch 1/5... Loss: 0.78"
           sleep 1
           echo "Training Epoch 5/5... Loss: 0.12"
           
