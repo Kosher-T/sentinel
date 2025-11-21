@@ -1,13 +1,16 @@
 # Phase 4: The Automation (The Manager)
 name: Data Drift Monitor
 
-# 1. THE ALARM CLOCK (Triggers)
 on:
   schedule:
     - cron: '0 3 * * *'
   workflow_dispatch:
 
-# 2. THE JOB (The Checklist)
+# PERMISSION GRANT: Allow this job to trigger other workflows (The Red Phone)
+permissions:
+  actions: write
+  contents: read
+
 jobs:
   run_drift_check:
     runs-on: ubuntu-latest
@@ -26,22 +29,28 @@ jobs:
       
       - name: Run Drift Detection Container
         id: run_monitor
-        # FIX: Mount the temp_status folder to /app/status_output
-        # This way, we don't overwrite the code in /app
         run: |
           docker run \
             -v ${{ github.workspace }}/data/drifted_frames:/app/incoming_data \
             -v ${{ github.workspace }}/temp_status:/app/status_output \
             vfi-monitor:latest
 
-      - name: Check Status and Scream if Necessary
+      - name: Check Status and Trigger Retraining
+        env:
+          # Give the script access to the GitHub Token to make the call
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Read the file from the mounted temp_status folder
           STATUS=$(cat ${{ github.workspace }}/temp_status/status.txt)
           echo "QC Verdict: $STATUS"
 
           if [[ "$STATUS" == "FAIL" ]]; then
-            echo "::error::🚨 High Drift Detected! The wood is bad!"
+            echo "::error::🚨 High Drift Detected! Calling the Repair Crew..."
+            
+            # --- THE RED PHONE ---
+            # Use GitHub CLI to trigger the retraining pipeline
+            gh workflow run retraining_pipeline.yml -f drift_score="89.38"
+            
+            echo "✅ Retraining Triggered. Marking this monitor run as Failed to alert humans."
             exit 1 
           else
             echo "✅ Data is good. Factory running smoothly."
