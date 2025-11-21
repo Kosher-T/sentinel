@@ -120,6 +120,7 @@ docker run \
 ## 🔮 Future Improvements & Roadmap
 
 ### 🛠️ Immediate Refinements (Next 3 Weeks)
+* Implement a table-of-contents tomorrow. I'm tired right now.
 * **Configuration Decoupling:** Currently, parameters are hardcoded. I am moving all thresholds (e.g., `Drift Score > 30%`) and file paths into a central `config.yaml` or environment variables. This ensures the codebase is clean, reusable, and production-ready without needing to touch the core logic.
 * **Visualization Dashboard:** Connect the **Drift Score** output to a **Grafana** or **Streamlit** dashboard. This will provide a real-time "Pulse Check" of the system, visualizing how the Data Drift fluctuates over time.
 
