@@ -48,14 +48,14 @@ jobs:
           echo "Detected Drift Score: $SCORE%"
 
           if [[ "$STATUS" == "FAIL" ]]; then
-            echo "::error::🚨 High Drift Detected! Calling the Repair Crew..."
+            echo "::error::High Drift Detected! Calling the Repair Crew..."
             
             # --- THE RED PHONE ---
             # Use GitHub CLI to trigger the retraining pipeline, passing the actual score!
             gh workflow run retraining_pipeline.yml -f drift_score="$SCORE"
             
-            echo "✅ Retraining Triggered. Marking this monitor run as Failed to alert humans."
+            echo "Retraining Triggered. Marking this monitor run as Failed to alert humans."
             exit 1 
           else
-            echo "✅ Data is good. Factory running smoothly."
+            echo "Data is good. Factory running smoothly."
           fi
