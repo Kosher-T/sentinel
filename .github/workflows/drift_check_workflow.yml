@@ -48,7 +48,7 @@ jobs:
           echo "Detected Drift Score: $SCORE%"
 
           if [[ "$STATUS" == "FAIL" ]]; then
-            echo "::error::🚨 High Drift Detected! Calling the Repair Crew..."
+            echo "::error::High Drift Detected! Retraining model..."
             gh workflow run retraining_pipeline.yml -f drift_score="$SCORE"
             echo "Retraining Triggered."
             exit 1 
