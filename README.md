@@ -1,13 +1,31 @@
 # 🛰️ Sentinel: Automated VFI Model Monitoring & Self-Healing Pipeline
 
-## 🏗️ The Architecture
+## 📑 Table of Contents
+
+- [The Architecture](#️-the-architecture)
+- [Project Status: The Simulation](#-project-status-the-simulation)
+- [The Self-Healing Loop (How it Works)](#-the-self-healing-loop-how-it-works)
+- [Tech Stack & Design Patterns](#️-tech-stack--design-patterns)
+- [The Workflow](#-the-workflow)
+  - [1. The "Saboteur" (Data Simulation)](#1-the-saboteur-data-simulation)
+  - [2. The "Endpoint" (Modular Monitoring)](#2-the-endpoint-modular-monitoring)
+  - [3. The "Red Phone" (Automated Retraining)](#3-the-red-phone-automated-retraining)
+- [How to Run This Project](#-how-to-run-this-project)
+  - [1. Build the Monitor](#1-build-the-monitor)
+  - [2. Run the Saboteur (Create Bad Data)](#2-run-the-saboteur-create-bad-data)
+  - [3. Run the QC Check Manually](#3-run-the-qc-check-manually)
+- [Future Improvements & Roadmap](#-future-improvements--roadmap)
+  - [Immediate Refinements (Next 2 Weeks)](#️-immediate-refinements-next-2-weeks)
+  - [Deep Learning & MLOps Expansions](#-deep-learning--mlops-expansions)
+
+## The Architecture
 *"Models degrade. Good systems heal themselves."*
 
 This project implements an **end-to-end MLOps Drift Detection System** for a Video Frame Interpolation (VFI) model. Instead of manually checking for performance decay (**fondly named "wobbly chairs"**) or data quality issues (**"softwood"**), this system automates the entire **Quality Control loop** using **Containerized Microservices** and **CI/CD Orchestration**.
 
 ---
 
-## 🚧 Project Status: The Simulation
+## Project Status: The Simulation
 To test this system properly, I am currently running it in a controlled, **simulated environment**. This allows me to prove that the "safety net" works before trusting it with a live model.
 
 | Component | Status | Notes |
@@ -18,19 +36,19 @@ To test this system properly, I am currently running it in a controlled, **simul
 
 ---
 
-## 🔄 The Self-Healing Loop (How it Works)
+## The Self-Healing Loop (How it Works)
 
 ```mermaid
 graph TD
     %% --- Nodes ---
-    A["⏰ Daily Schedule"] -->|Trigger| B("GitHub Actions Manager")
+    A["Daily Schedule"] -->|Trigger| B("GitHub Actions Manager")
     
     %% Manager only has ONE action now: Run the container
     B -->|Run| C
     
     subgraph Phase3 ["Phase 3: The Specialist"]
         direction TB
-        C{"🐳 QC Docker Container"}
+        C{"QC Docker Container"}
         
         C -->|Input| D["Incoming Video Data"]
         D -->|"MobileNetV2"| E["Extract Embeddings"]
@@ -42,8 +60,8 @@ graph TD
     F -->|"Score < 30%"| H["Verdict: PASS"]
     
     %% Direct sequential actions based on Verdict
-    G -->|"Triggers"| J["🚨 Trigger Retraining Pipeline"]
-    H -->|"Action"| K["✅ Log Success"]
+    G -->|"Triggers"| J["Trigger Retraining Pipeline"]
+    H -->|"Action"| K["Log Success"]
     
     J -->|Simulated| L["Fine-Tune Model on New Data"]
     L --> M["Deploy New Champion"]
@@ -62,7 +80,7 @@ graph TD
     class G fail
 ```
 
-## 🛠️ Tech Stack & Design Patterns
+## Tech Stack & Design Patterns
 
 | Component | Tech | Role (The Factory Analogy) |
 | :--- | :--- | :--- |
@@ -73,7 +91,7 @@ graph TD
 
 ---
 
-## 🚀 The Workflow
+## The Workflow
 
 ### 1. The "Saboteur" (Data Simulation)
 To prove the system works, I built a `data_saboteur.py` script that synthetically generates **"drifted" data** (noise, blur, low-light) to simulate real-world camera failures.
@@ -92,7 +110,7 @@ When drift is detected (*p-value* < 0.05), the system doesn't just alert—it ac
 
 ---
 
-## 📦 How to Run This Project
+## How to Run This Project
 
 **Prerequisites:**
 
@@ -117,13 +135,13 @@ docker run \
   vfi-monitor
 ```
 
-## 🔮 Future Improvements & Roadmap
+## Future Improvements & Roadmap
 
-### 🛠️ Immediate Refinements (Next 3 Weeks)
+### Immediate Refinements (Next 2 Weeks)
 * **Configuration Decoupling:** Currently, parameters are hardcoded. I am moving all thresholds (e.g., `Drift Score > 30%`) and file paths into a central `config.yaml` or environment variables. This ensures the codebase is clean, reusable, and production-ready without needing to touch the core logic.
 * **Visualization Dashboard:** Connect the **Drift Score** output to a **Grafana** or **Streamlit** dashboard. This will provide a real-time "Pulse Check" of the system, visualizing how the Data Drift fluctuates over time.
 
-### 🚀 Deep Learning & MLOps Expansions
-* **Model Drift (Concept Drift):** The system currently detects **Data Drift** (is the input weird?). The next phase is implementing **Model Drift** detection (is the model making mistakes?). This will involve creating a feedback loop to compare predictions against ground truth labels.
-* **Horizontal Scaling (Model Agnosticism):** Once the VFI pipeline is perfected, I will generalize the architecture. The goal is to pull models directly from **Hugging Face** or **Kaggle**, wrap them in this standard container, and monitor them using the same Sentinel logic.
+### Deep Learning & MLOps Expansions
+* **Model Drift (Concept Drift):** The system currently detects **Data Drift** (is the input weird?). The next phase is implementing **Model Decay** detection (is the model making mistakes?). This will involve creating a feedback loop to compare predictions against ground truth labels.
+* **Horizontal Scaling (Model Agnosticism):** Once the VFI pipeline is perfected, I will generalize the architecture. The goal is to either create and train models or pull them directly from **Hugging Face** or **Kaggle**, wrap them in this standard container, and monitor them using the same Sentinel logic.
 * **A/B Testing:** Implement a **Canary Deployment** strategy, allowing the "Champion" model and the "Challenger" model to run side-by-side on live data to compare performance safely.
