@@ -2,7 +2,7 @@
 
 ## Table of Contents
 
-- [The Architecture](#️the-architecture)
+- [The Architecture](#the-architecture)
 - [Project Status: The Simulation](#project-status-the-simulation)
 - [The Self-Healing Loop (How it Works)](#the-self-healing-loop-how-it-works)
 - [Tech Stack & Design Patterns](#tech-stack--design-patterns)
