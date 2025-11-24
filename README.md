@@ -146,7 +146,7 @@ These steps are designed to be completed fully offline to optimize resources:
 
 #### Deep Learning & MLOps Expansions
 
-* **Model Drift (Concept Drift):** The system currently detects **Data Drift** (is the input weird?). The next phase is implementing **Model Decay** detection (is the model making mistakes?). This will involve creating a feedback loop to compare predictions against ground truth labels.
+* **Model Drift (Concept Drift):** The system currently detects **Data Drift**. The next phase is implementing **Model Decay** detection. This will involve creating a feedback loop to compare predictions against ground truth labels.
 * **Horizontal Scaling (Model Agnosticism):** Once the VFI pipeline is perfected, I will generalize the architecture. The aim is for a modular monitoring approach that can easily monitor models pulled directly from **Hugging Face** or **Kaggle** using the same Sentinel container.
 * **A/B Testing:** Implement a **Canary Deployment** strategy, allowing the "Champion" model and the "Challenger" model to run side-by-side on live data to compare performance safely.
 
