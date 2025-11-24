@@ -15,7 +15,7 @@
   - [2. Run the Saboteur (Create Bad Data)](#2-run-the-saboteur-create-bad-data)
   - [3. Run the QC Check Manually](#3-run-the-qc-check-manually)
 - [Future Improvements & Roadmap](#-future-improvements--roadmap)
-  - [Immediate Refinements (Next 2 Weeks)](#️-immediate-refinements-next-2-weeks)
+  - [Immediate Refinements (Next 2 Weeks - Local Development Focus)](#️-immediate-refinements (Next 2 Weeks - Local Development Focus))
   - [Deep Learning & MLOps Expansions](#-deep-learning--mlops-expansions)
 
 ## The Architecture
