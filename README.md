@@ -14,7 +14,7 @@
   - [1. Build the Monitor](#1-build-the-monitor)
   - [2. Run the Saboteur (Create Bad Data)](#2-run-the-saboteur-create-bad-data)
   - [3. Run the QC Check Manually](#3-run-the-qc-check-manually)
-- [Future Roadmap (Scaling to Production)](#-future-roadmap-scaling-to-production)
+- [Future Roadmap (Scaling to Production)](#future-roadmap-scaling-to-production)
   - [Immediate Refinements (Next 2 Weeks - Local Development Focus)](#immediate-refinements-next-2-weeks---local-development-focus)
   - [Deep Learning & MLOps Expansions](#-deep-learning--mlops-expansions)
   - [Infrastructure & Cloud Migration](#infrastructure--cloud-migration-delayed)
