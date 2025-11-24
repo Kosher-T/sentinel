@@ -136,7 +136,7 @@ docker run \
   vfi-monitor
 ```
 
-### 🔮 Future Roadmap (Scaling to Production)
+### Future Roadmap (Scaling to Production)
 
 #### Immediate Refinements (Next 2 Weeks - Local Development Focus)
 
