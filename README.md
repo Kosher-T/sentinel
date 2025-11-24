@@ -135,12 +135,22 @@ docker run \
   vfi-monitor
 ```
 
-## Future Improvements & Roadmap
+### 🔮 Future Roadmap (Scaling to Production)
 
-### Immediate Refinements (Next 2 Weeks)
+#### Immediate Refinements (Next 2 Weeks - Local Development Focus)
+
+These steps are designed to be completed fully offline to optimize resources:
+
 * **Visualization Dashboard:** Connect the **Drift Score** output to a **Grafana** or **Streamlit** dashboard. This will provide a real-time "Pulse Check" of the system, visualizing how the Data Drift fluctuates over time.
+* **Decoupling:** Complete the implementation of external configuration management (e.g., Environment Variables, K8s ConfigMaps) to remove all hardcoded parameters.
 
-### Deep Learning & MLOps Expansions
+#### Deep Learning & MLOps Expansions
+
 * **Model Drift (Concept Drift):** The system currently detects **Data Drift** (is the input weird?). The next phase is implementing **Model Decay** detection (is the model making mistakes?). This will involve creating a feedback loop to compare predictions against ground truth labels.
-* **Horizontal Scaling (Model Agnosticism):** Once the VFI pipeline is perfected, I will generalize the architecture. The goal is to either create and train models or pull them directly from **Hugging Face** or **Kaggle**, wrap them in this standard container, and monitor them using the same Sentinel logic.
+* **Horizontal Scaling (Model Agnosticism):** Once the VFI pipeline is perfected, I will generalize the architecture. The aim is for a modular monitoring approach that can easily monitor models pulled directly from **Hugging Face** or **Kaggle** using the same Sentinel container.
 * **A/B Testing:** Implement a **Canary Deployment** strategy, allowing the "Champion" model and the "Challenger" model to run side-by-side on live data to compare performance safely.
+
+#### Infrastructure & Cloud Migration (Delayed)
+
+* **Cloud Deployment:** Deploy the VFI Model and the Sentinel Monitor to **Google Cloud Platform (GCP)**.
+* **Orchestrator Upgrade:** Migrate the orchestration layer from GitHub Actions to **Kubernetes (K8s)** to demonstrate production scaling, service management, and high availability.
