@@ -5,7 +5,7 @@
 - [The Architecture](#️the-architecture)
 - [Project Status: The Simulation](#project-status-the-simulation)
 - [The Self-Healing Loop (How it Works)](#the-self-healing-loop-how-it-works)
-- [Tech Stack & Design Patterns](#️tech-stack--design-patterns)
+- [Tech Stack & Design Patterns]([#tech-stack--design-patterns))
 - [The Workflow](#the-workflow)
   - [1. The "Saboteur" (Data Simulation)](#1-the-saboteur-data-simulation)
   - [2. The "Endpoint" (Modular Monitoring)](#2-the-endpoint-modular-monitoring)
