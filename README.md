@@ -2,16 +2,16 @@
 
 ## Table of Contents
 
-- [The Architecture](#️-the-architecture)
-- [Project Status: The Simulation](#-project-status-the-simulation)
-- [The Self-Healing Loop (How it Works)](#-the-self-healing-loop-how-it-works)
-- [Tech Stack & Design Patterns](#️-tech-stack--design-patterns)
-- [The Workflow](#-the-workflow)
+- [The Architecture](#️the-architecture)
+- [Project Status: The Simulation](#project-status-the-simulation)
+- [The Self-Healing Loop (How it Works)](#the-self-healing-loop-how-it-works)
+- [Tech Stack & Design Patterns](#️tech-stack--design-patterns)
+- [The Workflow](#the-workflow)
   - [1. The "Saboteur" (Data Simulation)](#1-the-saboteur-data-simulation)
   - [2. The "Endpoint" (Modular Monitoring)](#2-the-endpoint-modular-monitoring)
   - [3. The "Red Phone" (Automated Retraining)](#3-the-red-phone-automated-retraining)
-- [How to Run This Project](#-how-to-run-this-project)
-  - [1. Build the Monitor](#1-build-the-monitor)
+- [How to Run This Project](#how-to-run-this-project)
+  - [1. Build the Monitor](#1build-the-monitor)
   - [2. Run the Saboteur (Create Bad Data)](#2-run-the-saboteur-create-bad-data)
   - [3. Run the QC Check Manually](#3-run-the-qc-check-manually)
 - [Future Roadmap (Scaling to Production)](#future-roadmap-scaling-to-production)
