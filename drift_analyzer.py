@@ -5,9 +5,9 @@ import os
 
 # --- CONFIGURATION ---
 # SENSITIVITY_FACTOR controls how quickly the score jumps to 100%.
-# Higher = More sensitive. 
-# A factor of 10 means a Wasserstein distance of 0.1 will result in ~63% drift score.
-SENSITIVITY_FACTOR = 10.0 
+# Lowering this factor dampens the result, ensuring only large, meaningful raw distances 
+# translate into high percentage scores. We reduce it from 10.0 to 2.0.
+SENSITIVITY_FACTOR = 2.0
 
 def analyze_drift(baseline, drifted):
     """
