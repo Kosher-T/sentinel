@@ -1,20 +1,19 @@
 import numpy as np
-from scipy.stats import ks_2samp
+from scipy.stats import wasserstein_distance
 from sklearn.decomposition import PCA
 import os
 
 # --- CONFIGURATION ---
-# P-Value Threshold: The strictness of the statistical test
-try:
-    # We lower the default P-value slightly to be more conservative
-    P_VALUE_THRESHOLD = float(os.environ.get("P_VALUE_THRESHOLD", "0.01"))
-except ValueError:
-    P_VALUE_THRESHOLD = 0.01
+# SENSITIVITY_FACTOR controls how quickly the score jumps to 100%.
+# Higher = More sensitive. 
+# A factor of 10 means a Wasserstein distance of 0.1 will result in ~63% drift score.
+SENSITIVITY_FACTOR = 10.0 
 
 def analyze_drift(baseline, drifted):
     """
-    1. Reduces dimensionality using PCA to remove noise.
-    2. Performs KS Test on the Principal Components.
+    1. Reduces dimensionality using PCA.
+    2. Calculates Wasserstein Distance (Earth Mover's Distance).
+    3. Maps distance to a 0-100% score using a sigmoid-like function.
     """
     if baseline.shape[1] != drifted.shape[1]:
         raise ValueError("Embedding feature counts do not match!")
@@ -22,60 +21,48 @@ def analyze_drift(baseline, drifted):
     print(f"Original Feature Count: {baseline.shape[1]}")
     
     # --- STEP 1: Dimensionality Reduction (PCA) ---
-    # We want to keep enough components to explain 95% of the variance.
-    # This removes the 'noise' features that cause false positives.
-    
-    # If we have fewer samples than features, we can't run full PCA. 
-    # We cap components at min(samples, features)
     n_components = min(len(baseline), len(drifted), baseline.shape[1])
-    
-    # We target 95% variance retention or 50 components, whichever is smaller/safer
     target_variance = 0.95
     
-    print("Running PCA to reduce noise and dimensionality...")
+    print("Running PCA to reduce noise...")
     try:
         pca = PCA(n_components=target_variance)
         pca.fit(baseline)
-        
         baseline_pca = pca.transform(baseline)
         drifted_pca = pca.transform(drifted)
-        
         print(f"PCA reduced features from {baseline.shape[1]} to {baseline_pca.shape[1]}")
-        
     except Exception as e:
-        print(f"PCA Failed (likely too little data). Falling back to raw features. Error: {e}")
+        print(f"PCA Failed. Falling back to raw features. Error: {e}")
         baseline_pca = baseline
         drifted_pca = drifted
 
-    # --- STEP 2: Statistical Test (KS Test) ---
+    # --- STEP 2: Wasserstein Distance ---
     num_features = baseline_pca.shape[1]
-    significant_drift_count = 0
-    p_values = [] 
+    total_distance = 0.0
 
-    # We apply a correction because we are running multiple tests.
-    # Simple approach: Stick to the user defined P-Value but on much fewer, high-quality features.
-    
+    # We calculate the distance for every feature and average it
     for i in range(num_features):
-        baseline_feature = baseline_pca[:, i]
-        drifted_feature = drifted_pca[:, i]
+        b_feat = baseline_pca[:, i]
+        d_feat = drifted_pca[:, i]
         
-        # KS Test
-        statistic, p_value = ks_2samp(baseline_feature, drifted_feature)
-        p_values.append(p_value)
+        # Calculate Earth Mover's Distance for this feature
+        wd = wasserstein_distance(b_feat, d_feat)
+        total_distance += wd
 
-        if p_value < P_VALUE_THRESHOLD: # type: ignore
-            significant_drift_count += 1
+    avg_wasserstein_dist = total_distance / num_features
 
-    # Calculate the drift score
-    drift_score = (significant_drift_count / num_features) * 100
-
-    print("\n--- Summary of Drift Detection ---")
-    print(f"P-Value Threshold used: {P_VALUE_THRESHOLD}")
-    print(f"Total Components analyzed: {num_features}")
-    print(f"Components showing drift: {significant_drift_count}")
-    print(f"Overall Drift Score: {drift_score:.2f}%")
+    # --- STEP 3: Normalize to 0-100% Scale ---
+    # We use a simple exponential decay function to map distance (0 to inf) to percentage (0 to 100)
+    # Formula: Score = (1 - e^(-sensitivity * distance)) * 100
+    # This ensures 0 distance = 0% score, and high distance approaches 100% smoothly.
     
-    return drift_score, p_values
+    drift_score = (1 - np.exp(-SENSITIVITY_FACTOR * avg_wasserstein_dist)) * 100
+
+    print("\n--- Summary of Drift Detection (Wasserstein) ---")
+    print(f"Average Raw Distance: {avg_wasserstein_dist:.4f}")
+    print(f"Calculated Drift Score: {drift_score:.2f}%")
+    
+    return drift_score, None
 
 if __name__ == "__main__":
     pass
