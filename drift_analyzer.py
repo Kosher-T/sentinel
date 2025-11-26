@@ -63,7 +63,7 @@ def analyze_drift(baseline, drifted):
         statistic, p_value = ks_2samp(baseline_feature, drifted_feature)
         p_values.append(p_value)
 
-        if p_value < P_VALUE_THRESHOLD:
+        if p_value < P_VALUE_THRESHOLD: # type: ignore
             significant_drift_count += 1
 
     # Calculate the drift score
