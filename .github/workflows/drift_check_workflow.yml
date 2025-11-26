@@ -1,57 +1,55 @@
-# Phase 4: The Automation (The Manager)
-name: Data Drift Monitor
+name: Sentinel Cloud Monitor
 
 on:
-  schedule:
-    - cron: '0 3 * * *'
+  push:
+    branches: [ "main" ]
   workflow_dispatch:
 
-permissions:
-  actions: write
-  contents: read
-
 jobs:
-  run_drift_check:
+  run_sentinel_cloud:
     runs-on: ubuntu-latest
     
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-      
-      - name: Build QC Monitor Image
-        id: docker_build
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: false
-          tags: vfi-monitor:latest
-      
-      - name: Run Drift Detection Container
-        id: run_monitor
-        # NEW: We inject configuration using environment variables (-e)
+
+      # 1. We build the Docker image right here on GitHub's servers
+      # This uses THEIR bandwidth, not yours.
+      - name: Build Sentinel Docker Image
+        run: docker build -t vfi_monitor .
+
+      # 2. Run the Monitor (Establish Baseline)
+      # We map the repository's 'data/frames' folder to the container
+      - name: Run 1 - Establish Baseline
         run: |
           docker run \
             -e DRIFT_THRESHOLD=30.0 \
-            -e P_VALUE_THRESHOLD=0.05 \
+            -v ${{ github.workspace }}/data/frames:/app/incoming_data \
+            -v ${{ github.workspace }}/temp_status:/app/status_output \
+            vfi_monitor
+
+      # 3. Run the Monitor (Check Bad Data)
+      # This effectively tests the "Drifted" folder
+      - name: Run 2 - Check Drifted Data
+        continue-on-error: true # We expect this to fail (detect drift), so don't stop the workflow
+        run: |
+          docker run \
+            -e DRIFT_THRESHOLD=30.0 \
             -v ${{ github.workspace }}/data/drifted_frames:/app/incoming_data \
             -v ${{ github.workspace }}/temp_status:/app/status_output \
-            vfi-monitor:latest
+            vfi_monitor
 
-      - name: Check Status and Trigger Retraining
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 4. Display Results in the Log
+      - name: Show Drift Score
         run: |
-          STATUS=$(cat ${{ github.workspace }}/temp_status/status.txt)
-          SCORE=$(cat ${{ github.workspace }}/temp_status/score.txt)
+          echo "--- FINAL SENTINEL REPORT ---"
+          echo "STATUS: $(cat temp_status/status.txt)"
+          echo "DRIFT SCORE: $(cat temp_status/score.txt)%"
           
-          echo "QC Verdict: $STATUS"
-          echo "Detected Drift Score: $SCORE%"
-
-          if [[ "$STATUS" == "FAIL" ]]; then
-            echo "::error::High Drift Detected! Retraining model..."
-            gh workflow run retraining_pipeline.yml -f drift_score="$SCORE"
-            echo "Retraining Triggered."
-            exit 1 
-          else
-            echo "Data is good. Factory running smoothly."
-          fi
+      # 5. (Optional) Upload the Database so you can download it later
+      # This lets you run the Dashboard locally without running the heavy Docker container
+      - name: Upload Logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentinel-logs
+          path: temp_status/drift_history.db
