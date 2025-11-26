@@ -66,19 +66,17 @@ def check_for_drift():
         model = detector.create_embedding_model()
         baseline = detector.generate_embeddings_from_directory(model, NEW_DATA_PATH)
         
-        if baseline.size == 0:
+        if baseline.size == 0: # pyright: ignore[reportOptionalMemberAccess]
             print(f"CRITICAL ERROR: Failed to generate baseline embeddings. Check data format.")
             sys.exit(1)
             
         # Save the generated baseline to the persistent volume
-        np.save(BASELINE_PATH, baseline)
+        np.save(BASELINE_PATH, baseline) # pyright: ignore[reportArgumentType]
         print(f"1. Baseline embeddings successfully created and saved to {BASELINE_PATH}.")
         
         # When baseline is first created, we immediately exit PASS to establish the baseline
-        # The first real check happens on the next run.
-        log_to_db(0.0, "BASELINE_INIT", DRIFT_THRESHOLD)
+        # We REMOVED the log_to_db call here to prevent the 0% spike on the dashboard.
         
-        # We don't continue to drift analysis yet, as we need a new data run
         print("Initial baseline run complete. Monitoring will begin on next execution.")
         
         # --- SAVE OUTPUTS for initial run ---
