@@ -73,10 +73,10 @@ def check_for_drift():
         print("Initial baseline run complete. Monitoring will begin on next execution.")
         
         # --- SAVE OUTPUTS for initial run ---
-        with open(SCORE_PATH, "w") as f:
-            f.write(f"0.00")
-        with open(STATUS_PATH, "w") as f:
-            f.write("PASS")
+#        with open(SCORE_PATH, "w") as f:
+#            f.write(f"0.00")
+#        with open(STATUS_PATH, "w") as f:
+#            f.write("PASS")
         
         sys.exit(0) # Exit success after baseline creation
 
