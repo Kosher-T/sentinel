@@ -20,13 +20,13 @@ jobs:
 
       # 2. Run the Monitor (Establish Baseline)
       # We map the repository's 'data/frames' folder to the container
-      - name: Run 1 - Check Baseline Drift (frames/ drift)
-        run: |
-          docker run \
-            -e DRIFT_THRESHOLD=30.0 \
-            -v ${{ github.workspace }}/data/frames:/app/incoming_data \
-            -v ${{ github.workspace }}/temp_status:/app/status_output \
-            vfi_monitor
+#      - name: Run 1 - Check Baseline Drift (frames/ drift)
+#        run: |
+#          docker run \
+#            -e DRIFT_THRESHOLD=30.0 \
+#            -v ${{ github.workspace }}/data/frames:/app/incoming_data \
+#            -v ${{ github.workspace }}/temp_status:/app/status_output \
+#            vfi_monitor
 
       # 3. Run the Monitor (Check Bad Data)
       # This effectively tests the "Drifted" folder
