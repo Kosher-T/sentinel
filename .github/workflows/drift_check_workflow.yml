@@ -20,7 +20,7 @@ jobs:
 
       # 2. Run the Monitor (Establish Baseline)
       # We map the repository's 'data/frames' folder to the container
-#      - name: Run 1 - Establish Baseline
+#      - name: Run 1 - Check Baseline Drift (frames/ drift)
 #        run: |
 #          docker run \
 #            -e DRIFT_THRESHOLD=30.0 \
@@ -30,7 +30,7 @@ jobs:
 
       # 3. Run the Monitor (Check Bad Data)
       # This effectively tests the "Drifted" folder
-      - name: Run 2 - Check Drifted Data
+      - name: Run 2 - Check Drifted Data (drifted_frames)
         continue-on-error: true # We expect this to fail (detect drift), so don't stop the workflow
         run: |
           docker run \
