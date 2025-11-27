@@ -42,6 +42,20 @@ def log_to_db(score, status, threshold):
     conn.close()
     print(f"6. Logged result to {DB_PATH}")
 
+def get_total_image_count(directory):
+    """
+    Recursively counts image files in the directory and all subdirectories.
+    Solves the issue where data inside subfolders (e.g. 1113(1)-1/) was ignored.
+    """
+    valid_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp')
+    count = 0
+    # os.walk yields a 3-tuple (root, dirs, files) for every directory in the tree
+    for root, dirs, files in os.walk(directory):
+        for file in files:
+            if file.lower().endswith(valid_extensions):
+                count += 1
+    return count
+
 def check_for_drift():
     print(f"--- STARTING MONITORING JOB (Threshold: {DRIFT_THRESHOLD}%) ---")
     
@@ -53,21 +67,23 @@ def check_for_drift():
     if not os.path.exists(BASELINE_PATH):
         print(f"1. Baseline NOT found. Generating new baseline from {NEW_DATA_PATH}...")
         
-        data_files = [f for f in os.listdir(NEW_DATA_PATH) if os.path.isfile(os.path.join(NEW_DATA_PATH, f))]
-        if not data_files:
-            print(f"CRITICAL ERROR: No data found at {NEW_DATA_PATH} to generate initial baseline.")
+        # Use recursive count logic
+        num_baseline_samples = get_total_image_count(NEW_DATA_PATH)
+        
+        if num_baseline_samples == 0:
+            print(f"CRITICAL ERROR: No data found at {NEW_DATA_PATH} (recursively checked). Cannot generate baseline.")
             sys.exit(1)
             
         model = detector.create_embedding_model()
         baseline = detector.generate_embeddings_from_directory(model, NEW_DATA_PATH)
         
-        if baseline.size == 0: # pyright: ignore[reportOptionalMemberAccess]
+        if baseline.size == 0:
             print(f"CRITICAL ERROR: Failed to generate baseline embeddings. Check data format.")
             sys.exit(1)
             
         # Save the generated baseline to the persistent volume
-        np.save(BASELINE_PATH, baseline) # pyright: ignore[reportArgumentType]
-        print(f"1. Baseline embeddings successfully created and saved to {BASELINE_PATH}. Total samples: {baseline.shape[0]}") # pyright: ignore[reportOptionalMemberAccess]
+        np.save(BASELINE_PATH, baseline)
+        print(f"1. Baseline embeddings successfully created and saved to {BASELINE_PATH}. Total samples: {baseline.shape[0]}")
         
         # We skip logging 0% to avoid dashboard spikes
         print("Initial baseline run complete. Monitoring will begin on next execution.")
@@ -85,13 +101,13 @@ def check_for_drift():
     print(f"1. Baseline found at {BASELINE_PATH}. Loading...")
     baseline = np.load(BASELINE_PATH)
 
-    # Check for New Data files and minimum count
-    data_files = [f for f in os.listdir(NEW_DATA_PATH) if os.path.isfile(os.path.join(NEW_DATA_PATH, f))]
-    if not data_files:
-        print(f"Error: No data found at {NEW_DATA_PATH}.")
+    # Check for New Data files recursively
+    num_samples = get_total_image_count(NEW_DATA_PATH)
+    
+    if num_samples == 0:
+        print(f"Error: No image files found in {NEW_DATA_PATH} or its subdirectories.")
         sys.exit(1)
     
-    num_samples = len(data_files)
     if num_samples < MIN_SAMPLES_FOR_CHECK:
         status = "PASS"
         score = 0.0
