@@ -5,9 +5,8 @@ import os
 
 # --- CONFIGURATION ---
 # SENSITIVITY_FACTOR controls how quickly the score jumps to 100%.
-# Lowering this factor dampens the result, ensuring only large, meaningful raw distances 
-# translate into high percentage scores. We reduce it from 10.0 to 2.0.
-SENSITIVITY_FACTOR = 2.0
+# Dropping from 2.0 to 1.5 to provide a slightly more relaxed scoring for the magnitude of drift.
+SENSITIVITY_FACTOR = 1.5 
 
 def analyze_drift(baseline, drifted):
     """
@@ -21,16 +20,26 @@ def analyze_drift(baseline, drifted):
     print(f"Original Feature Count: {baseline.shape[1]}")
     
     # --- STEP 1: Dimensionality Reduction (PCA) ---
-    n_components = min(len(baseline), len(drifted), baseline.shape[1])
-    target_variance = 0.95
+    # We must have enough samples (rows) to perform PCA. Min samples = min(len(datasets))
+    n_samples_min = min(len(baseline), len(drifted))
+    n_features = baseline.shape[1]
     
+    # If the number of features is greater than min samples, PCA will fail or be meaningless.
+    if n_samples_min <= n_features:
+        print(f"WARNING: Too few samples ({n_samples_min}) for full PCA. Capping components.")
+        # Target variance might be unreachable, cap components by sample size
+        n_components_pca = n_samples_min - 1 if n_samples_min > 1 else 1
+    else:
+        # Default target variance approach
+        n_components_pca = 0.95
+
     print("Running PCA to reduce noise...")
     try:
-        pca = PCA(n_components=target_variance)
+        pca = PCA(n_components=n_components_pca)
         pca.fit(baseline)
         baseline_pca = pca.transform(baseline)
         drifted_pca = pca.transform(drifted)
-        print(f"PCA reduced features from {baseline.shape[1]} to {baseline_pca.shape[1]}")
+        print(f"PCA reduced features from {n_features} to {baseline_pca.shape[1]}")
     except Exception as e:
         print(f"PCA Failed. Falling back to raw features. Error: {e}")
         baseline_pca = baseline
@@ -52,9 +61,7 @@ def analyze_drift(baseline, drifted):
     avg_wasserstein_dist = total_distance / num_features
 
     # --- STEP 3: Normalize to 0-100% Scale ---
-    # We use a simple exponential decay function to map distance (0 to inf) to percentage (0 to 100)
     # Formula: Score = (1 - e^(-sensitivity * distance)) * 100
-    # This ensures 0 distance = 0% score, and high distance approaches 100% smoothly.
     
     drift_score = (1 - np.exp(-SENSITIVITY_FACTOR * avg_wasserstein_dist)) * 100
 
