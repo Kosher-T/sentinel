@@ -142,9 +142,6 @@ docker run \
 
 These steps are designed to be completed fully offline to optimize resources:
 
-* **Visualization Dashboard:** Connect the **Drift Score** output to a **Grafana** or **Streamlit** dashboard. This will provide a real-time "Pulse Check" of the system, visualizing how the Data Drift fluctuates over time.
-* **Decoupling:** Complete the implementation of external configuration management (e.g., Environment Variables, K8s ConfigMaps) to remove all hardcoded parameters.
-
 #### Deep Learning & MLOps Expansions
 
 * **Model Drift (Concept Drift):** The system currently detects **Data Drift**. The next phase is implementing **Model Decay** detection. This will involve creating a feedback loop to compare predictions against ground truth labels.
