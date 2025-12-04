@@ -11,12 +11,12 @@
   - [2. The "Endpoint" (Modular Monitoring)](#2-the-endpoint-modular-monitoring)
   - [3. The "Red Phone" (Automated Retraining)](#3-the-red-phone-automated-retraining)
 - [How to Run This Project](#how-to-run-this-project)
-  - [1. Build the Monitor](#1build-the-monitor)
+  - [1. Build the Monitor](#1-build-the-monitor)
   - [2. Run the Saboteur (Create Bad Data)](#2-run-the-saboteur-create-bad-data)
   - [3. Run the QC Check Manually](#3-run-the-qc-check-manually)
 - [Future Roadmap (Scaling to Production)](#future-roadmap-scaling-to-production)
   - [Immediate Refinements (Next 2 Weeks - Local Development Focus)](#immediate-refinements-next-2-weeks---local-development-focus)
-  - [Deep Learning & MLOps Expansions](#-deep-learning--mlops-expansions)
+  - [Deep Learning & MLOps Expansions](#deep-learning--mlops-expansions)
   - [Infrastructure & Cloud Migration](#infrastructure--cloud-migration-delayed)
 
 ## The Architecture
@@ -141,6 +141,9 @@ docker run \
 #### Immediate Refinements (Next 2 Weeks - Local Development Focus)
 
 These steps are designed to be completed fully offline to optimize resources:
+
+* ~**Visualization Dashboard:** Connect the **Drift Score** output to a **Grafana** or **Streamlit** dashboard. This will provide a real-time "Pulse Check" of the system, visualizing how the Data Drift fluctuates over time.~
+* ~**Decoupling:** Complete the implementation of external configuration management (e.g., Environment Variables, K8s ConfigMaps) to remove all hardcoded parameters.~
 
 #### Deep Learning & MLOps Expansions
 
