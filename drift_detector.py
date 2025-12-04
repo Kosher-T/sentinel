@@ -7,7 +7,7 @@ from keras.applications.vgg16 import VGG16, preprocess_input as vgg_preprocess
 from keras.applications.resnet import ResNet50, preprocess_input as resnet_preprocess
 import numpy as np
 import os
-import model_config  # <--- Connects to your config file
+import model_config  # <--- Connects to the config file
 
 # --- MODEL FACTORY ---
 # This dictionary maps config names to actual Keras models and their specific preprocessors.
