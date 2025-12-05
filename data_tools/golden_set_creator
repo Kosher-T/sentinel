@@ -54,7 +54,8 @@ def create_golden_pairs():
                 break
                 
             im1_path = frames[i]
-            im3_path = frames[i+2] # VFI typically skips one frame to predict the middle
+            im3_path = frames[i+1] # VFI typically skips one frame to predict the middle, but this video is already
+                                   # at 30 fps. No need to make interpolation results worse by sending half of the frames.  
             
             # Create the numbered folder (e.g., 0000001)
             folder_name = f"{sample_count + 1:07d}"
