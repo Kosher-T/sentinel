@@ -52,8 +52,8 @@ graph TD
         C{"QC Docker Container"}
         
         C -->|Input| D["Incoming Video Data"]
-        D -->|"MobileNetV2"| E["Extract Embeddings"]
-        E -->|"KS Test"| F["Drift Analysis"]
+        D -->|"Model Agnostic (MobileNetV2, VGG16, etc)"| E["Extract Embeddings"]
+        E -->|"Wasserstein Distance"| F["Drift Analysis"]
     end
     
     %% Logic flows out of Phase 3 directly to consequences
