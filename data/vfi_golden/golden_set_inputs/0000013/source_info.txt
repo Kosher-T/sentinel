@@ -1,0 +1,3 @@
+Source Clip: 1113(12)-1
+Original Im1: 1113(12)-1_frame_00100.jpg
+Original Im3: 1113(12)-1_frame_00101.jpg
