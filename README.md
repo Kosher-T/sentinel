@@ -1,4 +1,4 @@
-# Sentinel: Automated VFI Model Monitoring & Self-Healing Pipeline
+# Sentinel: Automated Model Monitoring & Self-Healing Pipeline
 
 ## Table of Contents
 
