@@ -1,1 +1,301 @@
-{"metadata":{"kernelspec":{"language":"python","display_name":"Python 3","name":"python3"},"language_info":{"name":"python","version":"3.11.13","mimetype":"text/x-python","codemirror_mode":{"name":"ipython","version":3},"pygments_lexer":"ipython3","nbconvert_exporter":"python","file_extension":".py"},"kaggle":{"accelerator":"nvidiaTeslaT4","dataSources":[{"sourceId":14009445,"sourceType":"datasetVersion","datasetId":8924809}],"dockerImageVersionId":31193,"isInternetEnabled":true,"language":"python","sourceType":"notebook","isGpuEnabled":true}},"nbformat_minor":4,"nbformat":4,"cells":[{"cell_type":"code","source":"import os\nimport cv2\nimport numpy as np\nimport tensorflow as tf\nfrom glob import glob\nfrom tqdm import tqdm\nfrom tensorflow.keras import layers\n\n# --- Custom Model Components ---\n# These definitions are copied directly from your training notebook\n# to ensure the model loads correctly.\n\n@tf.keras.utils.register_keras_serializable(package=\"Custom\")\nclass SeparableKernelWarping(layers.Layer):\n    \"\"\"\n    Custom layer for adaptive separable kernel warping in Video Frame Interpolation (VFI).\n\n    This layer takes two input frames (I1, I3) and a set of predicted kernels,\n    then applies separable convolution in two passes (horizontal and vertical)\n    to synthesize the intermediate frame.\n    \"\"\"\n\n    def __init__(self, kernel_size: int, **kwargs):\n        super().__init__(**kwargs)\n        self.kernel_size = kernel_size\n\n    def call(self, inputs):\n        \"\"\"\n        Args:\n            inputs: tuple/list of (I1, I3, kernels)\n                - I1: Tensor of shape (B, H, W, 3) → first frame\n                - I3: Tensor of shape (B, H, W, 3) → second frame\n                - kernels: Tensor of shape (B, H, W, 54) → predicted weights\n\n        Returns:\n            Tensor of shape (B, H, W, 3) → interpolated middle frame\n        \"\"\"\n        # --- 1. Separate Inputs ---\n        I1, I3, kernels = inputs\n        B, H, W, C = tf.unstack(tf.shape(I1), num=4)\n        K = self.kernel_size\n\n        # --- 2. Reshape Kernels ---\n        # Reshape to (B, H, W, 2 [I1/I3], K [weights], C [RGB])\n        kernels_reshaped = tf.reshape(kernels, [B, H, W, 2, K, C])\n        K1 = kernels_reshaped[..., 0, :, :]  # Kernels for I1\n        K3 = kernels_reshaped[..., 1, :, :]  # Kernels for I3\n\n        # --- 3. Horizontal Warping ---\n        # Extract horizontal patches (1 × K window)\n        ksizes_h = [1, 1, K, 1]\n        strides_h = [1, 1, 1, 1]\n\n        P1_H = tf.image.extract_patches(\n            I1, sizes=ksizes_h, strides=strides_h, rates=[1, 1, 1, 1], padding=\"SAME\"\n        )\n        P3_H = tf.image.extract_patches(\n            I3, sizes=ksizes_h, strides=strides_h, rates=[1, 1, 1, 1], padding=\"SAME\"\n        )\n\n        # Reshape patches to (B, H, W, K, C)\n        P1_H = tf.reshape(P1_H, [B, H, W, K, C])\n        P3_H = tf.reshape(P3_H, [B, H, W, K, C])\n\n        # Apply horizontal kernels (dynamic convolution)\n        I1_warped_H = tf.einsum(\"bhwkc,bhwkc->bhwc\", P1_H, K1)\n        I3_warped_H = tf.einsum(\"bhwkc,bhwkc->bhwc\", P3_H, K3)\n\n        # Combine intermediate results\n        I_intermediate = I1_warped_H + I3_warped_H\n\n        # --- 4. Vertical Warping ---\n        # Extract vertical patches (K × 1 window)\n        ksizes_v = [1, K, 1, 1]\n        strides_v = [1, 1, 1, 1]\n\n        P_V = tf.image.extract_patches(\n            I_intermediate, sizes=ksizes_v, strides=strides_v, rates=[1, 1, 1, 1], padding=\"SAME\"\n        )\n        P_V = tf.reshape(P_V, [B, H, W, K, C])\n\n        # Simplified vertical kernel: average of K1 and K3\n        K_V = (K1 + K3) / 2.0\n\n        # Apply vertical kernels\n        I_warped_V = tf.einsum(\"bhwkc,bhwkc->bhwc\", P_V, K_V)\n\n        return I_warped_V\n\n\n    def get_config(self):\n        config = super().get_config()\n        config.update({\n            \"kernel_size\": self.kernel_size,\n        })\n        return config\n\n# Get a small constant to prevent division by zero or log(0)\nEPSILON = tf.keras.backend.epsilon()\n\n@tf.keras.utils.register_keras_serializable(package=\"Custom\")\ndef ssim_loss(y_true, y_pred):\n    \"\"\"\n    Structural similarity loss.\n    Returns 1 - SSIM so that higher similarity → lower loss.\n    Includes clipping for numerical stability.\n    \"\"\"\n    # Failsafe: Clip values to the expected [0, 1] range\n    y_true_clipped = tf.clip_by_value(y_true, 0.0, 1.0)\n    y_pred_clipped = tf.clip_by_value(y_pred, 0.0, 1.0)\n    \n    ssim_val = tf.image.ssim(y_true_clipped, y_pred_clipped, max_val=1.0) # shape (batch,)\n    return 1.0 - ssim_val\n\n@tf.keras.utils.register_keras_serializable(package=\"Custom\")\ndef total_loss(y_true, y_pred):\n    \"\"\"\n    The actual loss function that will be used by Keras/TensorFlow.\n    Standardized logic (assuming default weights lambda_l1=0.8, lambda_ssim=0.2 \n    as per your training script default).\n    \"\"\"\n    lambda_l1 = 0.8\n    lambda_ssim = 0.2\n\n    # Failsafe: Clip values to the expected [0, 1] range\n    y_true_clipped = tf.clip_by_value(y_true, 0.0, 1.0)\n    y_pred_clipped = tf.clip_by_value(y_pred, 0.0, 1.0)\n\n    # --- L1 Loss (Mean Absolute Error) ---\n    l1_loss = tf.reduce_mean(tf.abs(y_true_clipped - y_pred_clipped))\n\n    # --- SSIM Loss ---\n    ssim_metric_per_image = tf.image.ssim(y_true_clipped, y_pred_clipped, max_val=1.0)\n    structural_loss = tf.reduce_mean(1.0 - ssim_metric_per_image)\n\n    # --- Weighted Combination ---\n    composite_loss = (lambda_l1 * l1_loss) + (lambda_ssim * structural_loss)\n\n    return composite_loss\n\n@tf.keras.utils.register_keras_serializable(package=\"Custom\")\ndef psnr_metric(y_true, y_pred):\n    \"\"\"\n    A stable Peak Signal-to-Noise Ratio metric.\n    Higher PSNR → better reconstruction quality.\n    \n    Handles potential `inf` values from perfect matches.\n    \"\"\"\n    # Failsafe: Clip values to the expected [0, 1] range\n    y_true_clipped = tf.clip_by_value(y_true, 0.0, 1.0)\n    y_pred_clipped = tf.clip_by_value(y_pred, 0.0, 1.0)\n    \n    # Calculate PSNR\n    psnr_val_per_image = tf.image.psnr(y_true_clipped, y_pred_clipped, max_val=1.0)\n    \n    # Handle potential `inf` values from perfect matches (where MSE=0)\n    # Replace `inf` with a large, non-problematic number (e.g., 100.0)\n    psnr_val_safe = tf.where(tf.math.is_inf(psnr_val_per_image), 100.0, psnr_val_per_image)\n    \n    return tf.reduce_mean(psnr_val_safe)\n\n\n# --- Configuration ---\n# Paths based on your Kaggle input structure\nINPUT_ROOT = \"/kaggle/input/golden-set-vfi-model/vfi_golden/golden_set_inputs\"\nMODEL_PATH = \"/kaggle/input/golden-set-vfi-model/vfi_golden/vfi_epoch_99.keras\"\n\n# Output directory (Kaggle's writable directory is /kaggle/working)\nOUTPUT_ROOT = \"/kaggle/working/golden_set_complete\"\n\n# VFI Model Constraints\nMODEL_INPUT_SIZE = (256, 256)\n\ndef load_vfi_model():\n    \"\"\"Loads the VFI model from the specified path, providing custom objects.\"\"\"\n    print(f\"Loading model from {MODEL_PATH}...\")\n    \n    # 1. Define the dictionary of all custom objects needed for the model\n    custom_objects = {\n        'SeparableKernelWarping': SeparableKernelWarping,\n        'total_loss': total_loss,\n        'psnr_metric': psnr_metric,\n        'ssim_loss': ssim_loss,\n    }\n    \n    try:\n        # 2. Pass the custom_objects dictionary to load_model\n        model = tf.keras.models.load_model(MODEL_PATH, custom_objects=custom_objects)\n        print(\"Model loaded successfully.\")\n        return model\n    except Exception as e:\n        print(f\"Error loading model: {e}\")\n        raise e\n\ndef preprocess_image(image_path, target_size):\n    \"\"\"\n    Loads an image, resizes it to model input size, and normalizes it.\n    Returns: Preprocessed image tensor (1, H, W, 3) and original dimensions.\n    \"\"\"\n    # Load image in BGR (OpenCV default) and convert to RGB\n    img = cv2.imread(image_path)\n    if img is None:\n        raise ValueError(f\"Could not load image at {image_path}\")\n    \n    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)\n    original_h, original_w = img.shape[:2]\n    \n    # Resize to model's expected input size (256x256)\n    img_resized = cv2.resize(img, target_size, interpolation=cv2.INTER_AREA)\n    \n    # Normalize to [0, 1] and add batch dimension\n    img_normalized = img_resized.astype(np.float32) / 255.0\n    img_batch = np.expand_dims(img_normalized, axis=0)\n    \n    return img_batch, (original_h, original_w)\n\ndef run_inference(model, im1_path, im3_path):\n    \"\"\"\n    Runs the VFI model on a pair of images.\n    Returns: The generated middle frame (numpy array, 0-255, RGB).\n    \"\"\"\n    # Preprocess both inputs\n    im1_batch, orig_dims = preprocess_image(im1_path, MODEL_INPUT_SIZE)\n    im3_batch, _ = preprocess_image(im3_path, MODEL_INPUT_SIZE)\n    \n    # Stack inputs as expected by the model [batch, H, W, 6] or similar\n    # Your model architecture usually takes concatenated inputs\n    inputs = np.concatenate([im1_batch, im3_batch], axis=-1)\n    \n    # Run Inference\n    prediction = model.predict(inputs, verbose=0)\n    \n    # Post-process output\n    # Prediction is [1, 256, 256, 3], remove batch dim\n    gen_img = prediction[0] \n    \n    # Clip values to [0, 1] range to avoid artifacts\n    gen_img = np.clip(gen_img, 0.0, 1.0)\n    \n    # Upscale back to original resolution\n    # Note: We use cubic interpolation for better quality on upscale\n    gen_img_upscaled = cv2.resize(gen_img, (orig_dims[1], orig_dims[0]), interpolation=cv2.INTER_CUBIC)\n    \n    # Convert back to [0, 255] integers\n    gen_img_uint8 = (gen_img_upscaled * 255.0).astype(np.uint8)\n    \n    return gen_img_uint8\n\ndef process_golden_set():\n    \"\"\"\n    Main loop: Iterates through input folders, generates frames, and saves output.\n    \"\"\"\n    # Create output directory\n    if not os.path.exists(OUTPUT_ROOT):\n        os.makedirs(OUTPUT_ROOT)\n    \n    model = load_vfi_model()\n    \n    # Find all sample folders (e.g., 0000001, 0000002)\n    sample_folders = sorted(glob(os.path.join(INPUT_ROOT, \"*\")))\n    print(f\"Found {len(sample_folders)} samples to process.\")\n    \n    for folder in tqdm(sample_folders):\n        folder_name = os.path.basename(folder)\n        \n        im1_path = os.path.join(folder, \"im1.jpg\")\n        im3_path = os.path.join(folder, \"im3.jpg\")\n        \n        if not os.path.exists(im1_path) or not os.path.exists(im3_path):\n            print(f\"Skipping {folder_name}: Missing input images.\")\n            continue\n            \n        # Prepare output folder structure\n        target_folder = os.path.join(OUTPUT_ROOT, folder_name)\n        if not os.path.exists(target_folder):\n            os.makedirs(target_folder)\n            \n        # Copy original inputs to the output folder (so we have a complete set)\n        # This is important so your local monitor has everything in one place later\n        shutil.copy2(im1_path, os.path.join(target_folder, \"im1.jpg\"))\n        shutil.copy2(im3_path, os.path.join(target_folder, \"im3.jpg\"))\n        \n        # Generate the middle frame\n        try:\n            fresh_im2 = run_inference(model, im1_path, im3_path)\n            \n            # Save the generated result\n            save_path = os.path.join(target_folder, \"fresh_im2.jpg\")\n            # Convert RGB back to BGR for OpenCV saving\n            cv2.imwrite(save_path, cv2.cvtColor(fresh_im2, cv2.COLOR_RGB2BGR))\n            \n        except Exception as e:\n            print(f\"Failed to process sample {folder_name}: {e}\")\n\n    print(\"\\n--- Processing Complete ---\")\n    print(f\"Results saved to: {OUTPUT_ROOT}\")\n    print(\"You can now zip and download the 'golden_set_complete' folder.\")\n\nif __name__ == \"__main__\":\n    import shutil # Ensure shutil is imported\n    process_golden_set()","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-12-10T03:56:23.903881Z","iopub.execute_input":"2025-12-10T03:56:23.904126Z","iopub.status.idle":"2025-12-10T03:56:23.950914Z","shell.execute_reply.started":"2025-12-10T03:56:23.904107Z","shell.execute_reply":"2025-12-10T03:56:23.949938Z"}},"outputs":[{"traceback":["\u001b[0;31m---------------------------------------------------------------------------\u001b[0m","\u001b[0;31mAttributeError\u001b[0m                            Traceback (most recent call last)","\u001b[0;32m/tmp/ipykernel_47/3073408381.py\u001b[0m in \u001b[0;36m<cell line: 0>\u001b[0;34m()\u001b[0m\n\u001b[1;32m      2\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mcv2\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m      3\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mnumpy\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0mnp\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m----> 4\u001b[0;31m \u001b[0;32mimport\u001b[0m \u001b[0mtensorflow\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0mtf\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m      5\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mglob\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mglob\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m      6\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtqdm\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mtqdm\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n","\u001b[0;32m/usr/local/lib/python3.11/dist-packages/tensorflow/__init__.py\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m     53\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mautograph\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     54\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mbitwise\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m---> 55\u001b[0;31m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mcompat\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m     56\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mconfig\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     57\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mdata\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n","\u001b[0;32m/usr/local/lib/python3.11/dist-packages/tensorflow/_api/v2/compat/__init__.py\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m      6\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0msys\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0m_sys\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m      7\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m----> 8\u001b[0;31m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mv1\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m      9\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mv2\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     10\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mpython\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mforward_compatibility_horizon\u001b[0m \u001b[0;31m# line: 125\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n","\u001b[0;32m/usr/local/lib/python3.11/dist-packages/tensorflow/_api/v2/compat/v1/__init__.py\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m     28\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv1\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mautograph\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     29\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv1\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mbitwise\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m---> 30\u001b[0;31m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv1\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mcompat\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m     31\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv1\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mconfig\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     32\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv1\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mdata\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n","\u001b[0;32m/usr/local/lib/python3.11/dist-packages/tensorflow/_api/v2/compat/v1/compat/__init__.py\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m      6\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0msys\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0m_sys\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m      7\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m----> 8\u001b[0;31m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv1\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mv1\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m      9\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv1\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mv2\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     10\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mpython\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mforward_compatibility_horizon\u001b[0m \u001b[0;31m# line: 125\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n","\u001b[0;32m/usr/local/lib/python3.11/dist-packages/tensorflow/_api/v2/compat/v1/compat/v1/__init__.py\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m     45\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv1\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mlayers\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     46\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv1\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mlinalg\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m---> 47\u001b[0;31m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv1\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mlite\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m     48\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv1\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mlogging\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     49\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv1\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mlookup\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n","\u001b[0;32m/usr/local/lib/python3.11/dist-packages/tensorflow/_api/v2/compat/v1/lite/__init__.py\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m      7\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m      8\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv1\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlite\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mconstants\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m----> 9\u001b[0;31m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv1\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlite\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mexperimental\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m     10\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlite\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mpython\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mconvert\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mOpsSet\u001b[0m \u001b[0;31m# line: 170\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     11\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlite\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mpython\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mconvert\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mtoco_convert\u001b[0m \u001b[0;31m# line: 1083\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n","\u001b[0;32m/usr/local/lib/python3.11/dist-packages/tensorflow/_api/v2/compat/v1/lite/experimental/__init__.py\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m      6\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0msys\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0m_sys\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m      7\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m----> 8\u001b[0;31m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_api\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv2\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompat\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mv1\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlite\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mexperimental\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mauthoring\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m      9\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlite\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mpython\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0manalyzer\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mModelAnalyzer\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0mAnalyzer\u001b[0m \u001b[0;31m# line: 35\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     10\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlite\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mpython\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0minterpreter\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mOpResolverType\u001b[0m \u001b[0;31m# line: 303\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n","\u001b[0;32m/usr/local/lib/python3.11/dist-packages/tensorflow/_api/v2/compat/v1/lite/experimental/authoring/__init__.py\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m      6\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0msys\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0m_sys\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m      7\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m----> 8\u001b[0;31m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlite\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mpython\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mauthoring\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mauthoring\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mcompatible\u001b[0m \u001b[0;31m# line: 263\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m      9\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     10\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mpython\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mutil\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mmodule_wrapper\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0m_module_wrapper\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n","\u001b[0;32m/usr/local/lib/python3.11/dist-packages/tensorflow/lite/python/authoring/authoring.py\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m     40\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompiler\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mmlir\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlite\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mmetrics\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mconverter_error_data_pb2\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     41\u001b[0m \u001b[0;31m# pylint: disable=g-import-not-at-top\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m---> 42\u001b[0;31m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlite\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mpython\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mconvert\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m     43\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlite\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mpython\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mlite\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     44\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mpython\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mutil\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mtf_export\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mtf_export\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0m_tf_export\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n","\u001b[0;32m/usr/local/lib/python3.11/dist-packages/tensorflow/lite/python/convert.py\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m     33\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcompiler\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mmlir\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mquantization\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mstablehlo\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mquantization_options_pb2\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0mquant_opts_pb2\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     34\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlite\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mpython\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mlite_constants\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m---> 35\u001b[0;31m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlite\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mpython\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mutil\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m     36\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlite\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mpython\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mconvert_phase\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mComponent\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     37\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mtensorflow\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlite\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mpython\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mconvert_phase\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mconvert_phase\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n","\u001b[0;32m/usr/local/lib/python3.11/dist-packages/tensorflow/lite/python/util.py\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m     51\u001b[0m \u001b[0;31m# pylint: disable=unused-import\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     52\u001b[0m \u001b[0;32mtry\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m---> 53\u001b[0;31m   \u001b[0;32mfrom\u001b[0m \u001b[0mjax\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mjit\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0m_jit\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m     54\u001b[0m \u001b[0;32mexcept\u001b[0m \u001b[0mImportError\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     55\u001b[0m   \u001b[0m_jit\u001b[0m \u001b[0;34m=\u001b[0m \u001b[0;32mNone\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n","\u001b[0;32m/usr/local/lib/python3.11/dist-packages/jax/__init__.py\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m    154\u001b[0m \u001b[0;31m# jax and rely on the names imported above.\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m    155\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mjax\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mcustom_derivatives\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0mcustom_derivatives\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m--> 156\u001b[0;31m \u001b[0;32mfrom\u001b[0m \u001b[0mjax\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mcustom_batching\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0mcustom_batching\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m    157\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mjax\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mcustom_transpose\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0mcustom_transpose\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m    158\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mjax\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mapi_util\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0mapi_util\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n","\u001b[0;32m/usr/local/lib/python3.11/dist-packages/jax/custom_batching.py\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m     13\u001b[0m \u001b[0;31m# limitations under the License.\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     14\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m---> 15\u001b[0;31m from jax._src.custom_batching import (\n\u001b[0m\u001b[1;32m     16\u001b[0m   \u001b[0mcustom_vmap\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0mcustom_vmap\u001b[0m\u001b[0;34m,\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     17\u001b[0m   \u001b[0msequential_vmap\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0msequential_vmap\u001b[0m\u001b[0;34m,\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n","\u001b[0;32m/usr/local/lib/python3.11/dist-packages/jax/_src/custom_batching.py\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m     20\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0moperator\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     21\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m---> 22\u001b[0;31m \u001b[0;32mfrom\u001b[0m \u001b[0mjax\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mlax\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m     23\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mjax\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_src\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mapi\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     24\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mjax\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_src\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mcore\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n","\u001b[0;32m/usr/local/lib/python3.11/dist-packages/jax/lax/__init__.py\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m    386\u001b[0m )\n\u001b[1;32m    387\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mjax\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_src\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mad_util\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mstop_gradient_p\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0mstop_gradient_p\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m--> 388\u001b[0;31m \u001b[0;32mfrom\u001b[0m \u001b[0mjax\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlax\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mlinalg\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0mlinalg\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m    389\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m    390\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mjax\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_src\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mpjit\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mwith_sharding_constraint\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0mwith_sharding_constraint\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n","\u001b[0;32m/usr/local/lib/python3.11/dist-packages/jax/lax/linalg.py\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m     13\u001b[0m \u001b[0;31m# limitations under the License.\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     14\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m---> 15\u001b[0;31m from jax._src.lax.linalg import (\n\u001b[0m\u001b[1;32m     16\u001b[0m   \u001b[0mcholesky\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0mcholesky\u001b[0m\u001b[0;34m,\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     17\u001b[0m   \u001b[0mcholesky_p\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0mcholesky_p\u001b[0m\u001b[0;34m,\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n","\u001b[0;32m/usr/local/lib/python3.11/dist-packages/jax/_src/lax/linalg.py\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m     39\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mjax\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_src\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0minterpreters\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mmlir\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     40\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mjax\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_src\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlax\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mcontrol_flow\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m---> 41\u001b[0;31m \u001b[0;32mfrom\u001b[0m \u001b[0mjax\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_src\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlax\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0meigh\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0mlax_eigh\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m     42\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mjax\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_src\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlax\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mlax\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0mlax_internal\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     43\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mjax\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_src\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlax\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0msvd\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0mlax_svd\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n","\u001b[0;32m/usr/local/lib/python3.11/dist-packages/jax/_src/lax/eigh.py\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m     42\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mjax\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_src\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlax\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mqdwh\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     43\u001b[0m \u001b[0;32mfrom\u001b[0m \u001b[0mjax\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_src\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlax\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mlinalg\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0mlax_linalg\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m---> 44\u001b[0;31m \u001b[0;32mfrom\u001b[0m \u001b[0mjax\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_src\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mlax\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mstack\u001b[0m \u001b[0;32mimport\u001b[0m \u001b[0mStack\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m     45\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     46\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n","\u001b[0;32m/usr/local/lib/python3.11/dist-packages/jax/_src/lax/stack.py\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m     76\u001b[0m     \u001b[0;32mreturn\u001b[0m \u001b[0mStack\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0mleaves\u001b[0m\u001b[0;34m[\u001b[0m\u001b[0;36m0\u001b[0m\u001b[0;34m]\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mjax\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mtree_util\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mtree_unflatten\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0mtreedef\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mleaves\u001b[0m\u001b[0;34m[\u001b[0m\u001b[0;36m1\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m]\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     77\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m---> 78\u001b[0;31m \u001b[0mjax\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mtree_util\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mregister_pytree_node\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0mStack\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mStack\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mflatten\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mStack\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0munflatten\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m","\u001b[0;31mAttributeError\u001b[0m: partially initialized module 'jax' has no attribute 'tree_util' (most likely due to a circular import)"],"ename":"AttributeError","evalue":"partially initialized module 'jax' has no attribute 'tree_util' (most likely due to a circular import)","output_type":"error"}],"execution_count":20}]}
+import os
+import cv2
+import numpy as np
+import tensorflow as tf
+from glob import glob
+from tqdm import tqdm
+from tensorflow.keras import layers
+
+# --- Custom Model Components ---
+# These definitions are copied directly from your training notebook
+# to ensure the model loads correctly.
+
+@tf.keras.utils.register_keras_serializable(package="Custom")
+class SeparableKernelWarping(layers.Layer):
+    """
+    Custom layer for adaptive separable kernel warping in Video Frame Interpolation (VFI).
+
+    This layer takes two input frames (I1, I3) and a set of predicted kernels,
+    then applies separable convolution in two passes (horizontal and vertical)
+    to synthesize the intermediate frame.
+    """
+
+    def __init__(self, kernel_size: int, **kwargs):
+        super().__init__(**kwargs)
+        self.kernel_size = kernel_size
+
+    def call(self, inputs):
+        """
+        Args:
+            inputs: tuple/list of (I1, I3, kernels)
+                - I1: Tensor of shape (B, H, W, 3) → first frame
+                - I3: Tensor of shape (B, H, W, 3) → second frame
+                - kernels: Tensor of shape (B, H, W, 54) → predicted weights
+
+        Returns:
+            Tensor of shape (B, H, W, 3) → interpolated middle frame
+        """
+        # --- 1. Separate Inputs ---
+        I1, I3, kernels = inputs
+        B, H, W, C = tf.unstack(tf.shape(I1), num=4)
+        K = self.kernel_size
+
+        # --- 2. Reshape Kernels ---
+        # Reshape to (B, H, W, 2 [I1/I3], K [weights], C [RGB])
+        kernels_reshaped = tf.reshape(kernels, [B, H, W, 2, K, C])
+        K1 = kernels_reshaped[..., 0, :, :]  # Kernels for I1
+        K3 = kernels_reshaped[..., 1, :, :]  # Kernels for I3
+
+        # --- 3. Horizontal Warping ---
+        # Extract horizontal patches (1 × K window)
+        ksizes_h = [1, 1, K, 1]
+        strides_h = [1, 1, 1, 1]
+
+        P1_H = tf.image.extract_patches(
+            I1, sizes=ksizes_h, strides=strides_h, rates=[1, 1, 1, 1], padding="SAME"
+        )
+        P3_H = tf.image.extract_patches(
+            I3, sizes=ksizes_h, strides=strides_h, rates=[1, 1, 1, 1], padding="SAME"
+        )
+
+        # Reshape patches to (B, H, W, K, C)
+        P1_H = tf.reshape(P1_H, [B, H, W, K, C])
+        P3_H = tf.reshape(P3_H, [B, H, W, K, C])
+
+        # Apply horizontal kernels (dynamic convolution)
+        I1_warped_H = tf.einsum("bhwkc,bhwkc->bhwc", P1_H, K1)
+        I3_warped_H = tf.einsum("bhwkc,bhwkc->bhwc", P3_H, K3)
+
+        # Combine intermediate results
+        I_intermediate = I1_warped_H + I3_warped_H
+
+        # --- 4. Vertical Warping ---
+        # Extract vertical patches (K × 1 window)
+        ksizes_v = [1, K, 1, 1]
+        strides_v = [1, 1, 1, 1]
+
+        P_V = tf.image.extract_patches(
+            I_intermediate, sizes=ksizes_v, strides=strides_v, rates=[1, 1, 1, 1], padding="SAME"
+        )
+        P_V = tf.reshape(P_V, [B, H, W, K, C])
+
+        # Simplified vertical kernel: average of K1 and K3
+        K_V = (K1 + K3) / 2.0
+
+        # Apply vertical kernels
+        I_warped_V = tf.einsum("bhwkc,bhwkc->bhwc", P_V, K_V)
+
+        return I_warped_V
+
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "kernel_size": self.kernel_size,
+        })
+        return config
+
+# Get a small constant to prevent division by zero or log(0)
+EPSILON = tf.keras.backend.epsilon()
+
+@tf.keras.utils.register_keras_serializable(package="Custom")
+def ssim_loss(y_true, y_pred):
+    """
+    Structural similarity loss.
+    Returns 1 - SSIM so that higher similarity → lower loss.
+    Includes clipping for numerical stability.
+    """
+    # Failsafe: Clip values to the expected [0, 1] range
+    y_true_clipped = tf.clip_by_value(y_true, 0.0, 1.0)
+    y_pred_clipped = tf.clip_by_value(y_pred, 0.0, 1.0)
+    
+    ssim_val = tf.image.ssim(y_true_clipped, y_pred_clipped, max_val=1.0) # shape (batch,)
+    return 1.0 - ssim_val
+
+@tf.keras.utils.register_keras_serializable(package="Custom")
+def total_loss(y_true, y_pred):
+    """
+    The actual loss function that will be used by Keras/TensorFlow.
+    Standardized logic (assuming default weights lambda_l1=0.8, lambda_ssim=0.2 
+    as per your training script default).
+    """
+    lambda_l1 = 0.8
+    lambda_ssim = 0.2
+
+    # Failsafe: Clip values to the expected [0, 1] range
+    y_true_clipped = tf.clip_by_value(y_true, 0.0, 1.0)
+    y_pred_clipped = tf.clip_by_value(y_pred, 0.0, 1.0)
+
+    # --- L1 Loss (Mean Absolute Error) ---
+    l1_loss = tf.reduce_mean(tf.abs(y_true_clipped - y_pred_clipped))
+
+    # --- SSIM Loss ---
+    ssim_metric_per_image = tf.image.ssim(y_true_clipped, y_pred_clipped, max_val=1.0)
+    structural_loss = tf.reduce_mean(1.0 - ssim_metric_per_image)
+
+    # --- Weighted Combination ---
+    composite_loss = (lambda_l1 * l1_loss) + (lambda_ssim * structural_loss)
+
+    return composite_loss
+
+@tf.keras.utils.register_keras_serializable(package="Custom")
+def psnr_metric(y_true, y_pred):
+    """
+    A stable Peak Signal-to-Noise Ratio metric.
+    Higher PSNR → better reconstruction quality.
+    
+    Handles potential `inf` values from perfect matches.
+    """
+    # Failsafe: Clip values to the expected [0, 1] range
+    y_true_clipped = tf.clip_by_value(y_true, 0.0, 1.0)
+    y_pred_clipped = tf.clip_by_value(y_pred, 0.0, 1.0)
+    
+    # Calculate PSNR
+    psnr_val_per_image = tf.image.psnr(y_true_clipped, y_pred_clipped, max_val=1.0)
+    
+    # Handle potential `inf` values from perfect matches (where MSE=0)
+    # Replace `inf` with a large, non-problematic number (e.g., 100.0)
+    psnr_val_safe = tf.where(tf.math.is_inf(psnr_val_per_image), 100.0, psnr_val_per_image)
+    
+    return tf.reduce_mean(psnr_val_safe)
+
+
+# --- Configuration ---
+# Paths based on your Kaggle input structure
+INPUT_ROOT = "/kaggle/input/golden-set-vfi-model/vfi_golden/golden_set_inputs"
+MODEL_PATH = "/kaggle/input/golden-set-vfi-model/vfi_golden/vfi_epoch_99.keras"
+
+# Output directory (Kaggle's writable directory is /kaggle/working)
+OUTPUT_ROOT = "/kaggle/working/golden_set_complete"
+
+# VFI Model Constraints
+MODEL_INPUT_SIZE = (256, 256)
+
+def load_vfi_model():
+    """Loads the VFI model from the specified path, providing custom objects."""
+    print(f"Loading model from {MODEL_PATH}...")
+    
+    # 1. Define the dictionary of all custom objects needed for the model
+    custom_objects = {
+        'SeparableKernelWarping': SeparableKernelWarping,
+        'total_loss': total_loss,
+        'psnr_metric': psnr_metric,
+        'ssim_loss': ssim_loss,
+    }
+    
+    try:
+        # 2. Pass the custom_objects dictionary to load_model
+        model = tf.keras.models.load_model(MODEL_PATH, custom_objects=custom_objects)
+        print("Model loaded successfully.")
+        return model
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        raise e
+
+def preprocess_image(image_path, target_size):
+    """
+    Loads an image, resizes it to model input size, and normalizes it.
+    Returns: Preprocessed image tensor (1, H, W, 3) and original dimensions.
+    """
+    # Load image in BGR (OpenCV default) and convert to RGB
+    img = cv2.imread(image_path)
+    if img is None:
+        raise ValueError(f"Could not load image at {image_path}")
+    
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    original_h, original_w = img.shape[:2]
+    
+    # Resize to model's expected input size (256x256)
+    img_resized = cv2.resize(img, target_size, interpolation=cv2.INTER_AREA)
+    
+    # Normalize to [0, 1] and add batch dimension
+    img_normalized = img_resized.astype(np.float32) / 255.0
+    img_batch = np.expand_dims(img_normalized, axis=0)
+    
+    return img_batch, (original_h, original_w)
+
+def run_inference(model, im1_path, im3_path):
+    """
+    Runs the VFI model on a pair of images.
+    Returns: The generated middle frame (numpy array, 0-255, RGB).
+    """
+    # Preprocess both inputs
+    im1_batch, orig_dims = preprocess_image(im1_path, MODEL_INPUT_SIZE)
+    im3_batch, _ = preprocess_image(im3_path, MODEL_INPUT_SIZE)
+    
+    # Stack inputs as expected by the model [batch, H, W, 6] or similar
+    # Your model architecture usually takes concatenated inputs
+    inputs = np.concatenate([im1_batch, im3_batch], axis=-1)
+    
+    # Run Inference
+    prediction = model.predict(inputs, verbose=0)
+    
+    # Post-process output
+    # Prediction is [1, 256, 256, 3], remove batch dim
+    gen_img = prediction[0] 
+    
+    # Clip values to [0, 1] range to avoid artifacts
+    gen_img = np.clip(gen_img, 0.0, 1.0)
+    
+    # Upscale back to original resolution
+    # Note: We use cubic interpolation for better quality on upscale
+    gen_img_upscaled = cv2.resize(gen_img, (orig_dims[1], orig_dims[0]), interpolation=cv2.INTER_CUBIC)
+    
+    # Convert back to [0, 255] integers
+    gen_img_uint8 = (gen_img_upscaled * 255.0).astype(np.uint8)
+    
+    return gen_img_uint8
+
+def process_golden_set():
+    """
+    Main loop: Iterates through input folders, generates frames, and saves output.
+    """
+    # Create output directory
+    if not os.path.exists(OUTPUT_ROOT):
+        os.makedirs(OUTPUT_ROOT)
+    
+    model = load_vfi_model()
+    
+    # Find all sample folders (e.g., 0000001, 0000002)
+    sample_folders = sorted(glob(os.path.join(INPUT_ROOT, "*")))
+    print(f"Found {len(sample_folders)} samples to process.")
+    
+    for folder in tqdm(sample_folders):
+        folder_name = os.path.basename(folder)
+        
+        im1_path = os.path.join(folder, "im1.jpg")
+        im3_path = os.path.join(folder, "im3.jpg")
+        
+        if not os.path.exists(im1_path) or not os.path.exists(im3_path):
+            print(f"Skipping {folder_name}: Missing input images.")
+            continue
+            
+        # Prepare output folder structure
+        target_folder = os.path.join(OUTPUT_ROOT, folder_name)
+        if not os.path.exists(target_folder):
+            os.makedirs(target_folder)
+            
+        # Copy original inputs to the output folder (so we have a complete set)
+        # This is important so your local monitor has everything in one place later
+        shutil.copy2(im1_path, os.path.join(target_folder, "im1.jpg"))
+        shutil.copy2(im3_path, os.path.join(target_folder, "im3.jpg"))
+        
+        # Generate the middle frame
+        try:
+            fresh_im2 = run_inference(model, im1_path, im3_path)
+            
+            # Save the generated result
+            save_path = os.path.join(target_folder, "fresh_im2.jpg")
+            # Convert RGB back to BGR for OpenCV saving
+            cv2.imwrite(save_path, cv2.cvtColor(fresh_im2, cv2.COLOR_RGB2BGR))
+            
+        except Exception as e:
+            print(f"Failed to process sample {folder_name}: {e}")
+
+    print("\n--- Processing Complete ---")
+    print(f"Results saved to: {OUTPUT_ROOT}")
+    print("You can now zip and download the 'golden_set_complete' folder.")
+
+if __name__ == "__main__":
+    import shutil # Ensure shutil is imported
+    process_golden_set()
