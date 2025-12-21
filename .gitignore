@@ -1,9 +1,6 @@
-data/drifted_frames
-data/frames
+
 data/septuplet_dataset
-data/source_clips
-data/temps
-data/vfi_golden
+
 venv/
 
 *.7z
