@@ -5,7 +5,7 @@ from pathlib import Path
 
 # --- CONFIGURATION ---
 # The folder containing your septuplet sequences (001, 002, etc.)
-GOLDEN_SET_DIR = r"C:\Code\Code\Python\frame_generation_engine\sentinel\data\golden_set_septuplets\sequences"
+GOLDEN_SET_DIR = input("Enter the path to the golden set directory (e.g., C:\\path\\to\\golden_set_septuplets\\sequences): ")
 
 # Compression Settings
 # WebP quality 80-85 is the sweet spot for VFI training data
