@@ -5,7 +5,7 @@ from pathlib import Path
 
 # --- RELATIVE PATHING ---
 # Assumes script is run from the project root
-BASE_DATA_DIR = os.path.join(".", "data", "vfi_golden_set_webp")
+BASE_DATA_DIR = os.path.join(".", "data", "golden_set_septuplets")
 OUTPUT_EMBEDDINGS_DIR = os.path.join(".", "data", "model_decay", "embeddings")
 
 def get_vfi_results(root_dir, frame_type="im4_pred.webp"):
