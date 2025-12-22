@@ -35,6 +35,7 @@ def create_embedding_model():
         input_shape=model_config.EMBEDDING_INPUT_SHAPE,
         pooling='avg'
     )
+    base.summary()
     return base
 
 def extract_features(model, image_paths):
