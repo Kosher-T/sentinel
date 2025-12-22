@@ -2,17 +2,13 @@ import os
 import numpy as np
 import sys
 from pathlib import Path
+import feature_extractor as extractor
 
 # Fix imports: Ensure the script can find feature_extractor.py and model_config.py 
 # if they are in the project root (sentinel/)
 project_root = Path(__file__).parents[1]
 sys.path.append(str(project_root))
 
-try:
-    import feature_extractor as extractor
-except ImportError:
-    # Fallback name if renaming hasn't been finalized in the filesystem yet
-    import drift_detector as extractor
 
 # --- SYSTEM AGNOSTIC RELATIVE PATHING ---
 # We anchor everything to the project root (sentinel/)
