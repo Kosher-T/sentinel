@@ -1,7 +1,9 @@
 venv/
 data/golden_set_septuplets1/
 data/vfi_golden_set_webp/
-data/golden_set_septuplets/
+data/golden_set_septuplets2
+# data/golden_set_septuplets1
+
 
 *.7z
 *.mp4
