@@ -1,3 +1,7 @@
+# Uses a config file to set up a Keras feature extraction model.
+# Supports multiple architectures (MobileNet, VGG, ResNet) via a factory pattern.
+# Uses the loaded model to generate embeddings from images in a directory.
+
 import tensorflow as tf
 import keras
 from keras.preprocessing import image
