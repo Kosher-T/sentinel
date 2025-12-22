@@ -47,22 +47,32 @@ graph TD
     %% Manager only has ONE action now: Run the container
     B -->|Run| C
     
-    subgraph Phase3 ["Phase 3: The Specialist"]
+    subgraph Phase3 ["Phase 3: The Specialist (Sentinel)"]
         direction TB
         C{"QC Docker Container"}
         
-        C -->|Input| D["Incoming Video Data"]
-        D -->|"Model Agnostic (MobileNetV2, VGG16, etc)"| E["Extract Embeddings"]
-        E -->|"Wasserstein Distance"| F["Drift Analysis"]
+        C -->|Input Stream| D["Incoming Video Data"]
+        
+        %% --- Path 1: Data Drift (The 'Softwood' Check) ---
+        D -->|"MobileNetV2"| E["Extract Feature Embeddings"]
+        E -->|"Wasserstein Distance"| F["Data Drift Analysis"]
+        
+        %% --- Path 2: Model Decay (The 'Wobbly Chair' Check) ---
+        D -->|"VFI Model Inference"| X["Generate Prediction"]
+        X -->|"Compare w/ Golden Set"| Y["Model Decay Analysis"]
+        
+        %% --- Synthesis ---
+        F --> Z{"Aggregate Health Score"}
+        Y --> Z
     end
     
     %% Logic flows out of Phase 3 directly to consequences
-    F -->|"Score > 30%"| G["Verdict: FAIL"]
-    F -->|"Score < 30%"| H["Verdict: PASS"]
+    Z -->|"Score < Threshold"| G["Verdict: FAIL"]
+    Z -->|"Score > Threshold"| H["Verdict: PASS"]
     
     %% Direct sequential actions based on Verdict
     G -->|"Triggers"| J["Trigger Retraining Pipeline"]
-    H -->|"Action"| K["Log Success"]
+    H -->|"Action"| K["Log Success & Metrics"]
     
     J -->|Simulated| L["Fine-Tune Model on New Data"]
     L --> M["Deploy New Champion"]
@@ -74,9 +84,9 @@ graph TD
     classDef fail fill:#ffebee,stroke:#c62828,stroke-width:2px,color:#b71c1c
     classDef decision fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
 
-    class A,D,E base
+    class A,D,E,X base
     class B,J,L,M action
-    class C,F decision
+    class C,F,Y,Z decision
     class H,K success
     class G fail
 ```
