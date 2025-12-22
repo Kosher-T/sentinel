@@ -9,7 +9,7 @@ GOLDEN_SET_DIR = input("Enter the path to the golden set directory (e.g., C:\\pa
 
 # Compression Settings
 # WebP quality 80-85 is the sweet spot for VFI training data
-TARGET_QUALITY = 85 
+TARGET_QUALITY = 85
 
 def optimize_septuplet_folder(folder_path, quality=85):
     """
