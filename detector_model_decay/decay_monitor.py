@@ -1,78 +1,131 @@
 import os
 import numpy as np
 import sys
+import cv2
+import tensorflow as tf
+import keras
 from pathlib import Path
 import feature_extractor as extractor
 
-# Fix imports: Ensure the script can find feature_extractor.py and model_config.py 
-# if they are in the project root (sentinel/)
-project_root = Path(__file__).parents[1]
-sys.path.append(str(project_root))
+# --- PROJECT ROOT CALCULATION ---
+project_root = Path(__file__).resolve().parents[1]
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
 
-# --- SYSTEM AGNOSTIC RELATIVE PATHING ---
-# We anchor everything to the project root (sentinel/)
+# --- PATH CONFIGURATION ---
 BASE_DATA_DIR = project_root / "data" / "golden_set_septuplets"
-OUTPUT_EMBEDDINGS_DIR = project_root / "data" / "model_decay" / "embeddings"
+# Models path based on your directory PDF
+OLD_MODEL_PATH = BASE_DATA_DIR / "models" / "old_model" / "vfi_septuplet_epoch_31.keras"
 
-def get_vfi_results(root_dir, frame_type="im4_pred.webp"):
-    """
-    Finds all instances of a specific predicted frame across all sequence folders.
-    Paths are built relative to the project root.
-    """
-    image_paths = []
-    # Folder structure: sentinel/data/golden_set_septuplets/[interpolation|prediction]/001/im4_pred.webp
-    for sub_type in ["interpolation", "prediction"]:
-        search_path = root_dir / sub_type
-        if not search_path.exists():
+# Output for frames: data/model_decay/results/
+RESULTS_DIR = project_root / "data" / "model_decay" / "old_model_results"
+# Output for embeddings: data/model_decay/embeddings/old_model/
+EMBEDDINGS_DIR = project_root / "data" / "model_decay" / "embeddings" / "old_model"
+
+# --- VFI INFERENCE HELPERS ---
+
+def load_vfi_model(model_path):
+    """Loads the production (old) VFI model with custom objects."""
+    print(f"Loading VFI Model: {model_path}")
+    # Note: Assuming custom losses are standard; if they differ, update custom_objects
+    return keras.models.load_model(model_path, compile=False)
+
+def prepare_input_sequence(seq_path):
+    """Loads im1-im3 and im5-im6 for im4 interpolation, and im1-im6 for im7 prediction."""
+    frames = []
+    # We need im1, im2, im3, im4(skipped), im5, im6, im7(target)
+    # For the model input (6 frames concatenated), we use indices 1-6
+    for i in range(1, 7):
+        img_path = seq_path / f"im{i}.webp"
+        if not img_path.exists():
+            img_path = seq_path / f"im{i}.png" # Fallback
+            
+        img = cv2.imread(str(img_path))
+        if img is None:
+            return None
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img, (256, 256)) # Model requirement
+        frames.append(img)
+    
+    # Shape: (1, 256, 256, 18)
+    input_data = np.concatenate(frames, axis=-1).astype('float32') / 255.0
+    return np.expand_dims(input_data, axis=0)
+
+# --- CORE LOGIC ---
+
+def run_vfi_inference_on_golden_set(vfi_model):
+    """Generates im4_pred and im7_pred for all sequences in the golden set."""
+    print("🎬 Starting VFI Inference for Model Decay check...")
+    
+    # We iterate through the raw sequences (which contain im1-im7)
+    # Your PDF shows sequences in data/golden_set_septuplets/interpolation and prediction
+    # We focus on a unified 'sequences' folder if it exists, or scan subfolders.
+    sequence_dirs = []
+    raw_data_path = BASE_DATA_DIR / "sequences" 
+    
+    if raw_data_path.exists():
+        sequence_dirs = sorted([d for d in raw_data_path.iterdir() if d.is_dir()])
+    
+    for seq_dir in sequence_dirs:
+        seq_id = seq_dir.name
+        output_seq_path = RESULTS_DIR / seq_id
+        output_seq_path.mkdir(parents=True, exist_ok=True)
+
+        input_tensor = prepare_input_sequence(seq_dir)
+        if input_tensor is None:
             continue
+
+        # Inference: Model has two heads [prediction_head, interpolation_head]
+        preds = vfi_model.predict(input_tensor, verbose=0)
         
-        # Iterate through sequence folders (001, 002, etc.)
-        for seq_folder in search_path.iterdir():
-            if seq_folder.is_dir():
-                full_path = seq_folder / frame_type
-                if full_path.exists():
-                    image_paths.append(str(full_path))
-    
-    return sorted(image_paths)
+        # heads are usually returned as a list or dict
+        im7_pred = (preds[0][0] * 255).astype(np.uint8) # Prediction Head
+        im4_pred = (preds[1][0] * 255).astype(np.uint8) # Interpolation Head
 
-def save_embeddings(data, filename):
-    """Utility to ensure directory exists and save numpy array."""
-    if not OUTPUT_EMBEDDINGS_DIR.exists():
-        OUTPUT_EMBEDDINGS_DIR.mkdir(parents=True, exist_ok=True)
-    
-    save_path = OUTPUT_EMBEDDINGS_DIR / filename
-    np.save(save_path, data)
-    print(f"✅ Saved {len(data)} embeddings to {save_path}")
+        # Save results
+        cv2.imwrite(str(output_seq_path / "im4_pred.webp"), cv2.cvtColor(im4_pred, cv2.COLOR_RGB2BGR))
+        cv2.imwrite(str(output_seq_path / "im7_pred.webp"), cv2.cvtColor(im7_pred, cv2.RGB2BGR))
+        
+    print(f"✅ Generated results for {len(sequence_dirs)} sequences in {RESULTS_DIR}")
 
-def run_decay_embedding_extraction():
-    """Phase 2.3: Extract embeddings for the predicted frames from the current model."""
-    print(f"🚀 Starting Model Decay Feature Extraction...")
-    print(f"📂 Root Data Dir: {BASE_DATA_DIR}")
-
-    # 1. Initialize Feature Extractor (MobileNetV2/VGG16 as per model_config.py)
-    try:
-        model = extractor.create_embedding_model()
-    except Exception as e:
-        print(f"❌ Failed to initialize feature extractor: {e}")
-        return
+def extract_and_save_old_model_embeddings():
+    """Generates embeddings for the frames generated by the OLD model."""
+    print("🚀 Extracting Feature Embeddings for Old Model Results...")
     
-    # 2. Process im4 (Interpolation Results)
-    print("🎬 Processing Interpolation Results (im4)...")
-    im4_paths = get_vfi_results(BASE_DATA_DIR, "im4_pred.webp")
+    feature_model = extractor.create_embedding_model()
+    
+    # Find generated paths
+    im4_paths = []
+    im7_paths = []
+    
+    for seq_folder in sorted(RESULTS_DIR.iterdir()):
+        if seq_folder.is_dir():
+            p4 = seq_folder / "im4_pred.webp"
+            p7 = seq_folder / "im7_pred.webp"
+            if p4.exists(): im4_paths.append(str(p4))
+            if p7.exists(): im7_paths.append(str(p7))
+
     if im4_paths:
-        im4_embeddings = extractor.extract_features(model, im4_paths)
-        save_embeddings(im4_embeddings, "im4_embeddings.npy")
-    else:
-        print(f"⚠️ No im4_pred.webp files found in {BASE_DATA_DIR}/[interpolation|prediction]")
+        emb4 = extractor.extract_features(feature_model, im4_paths)
+        EMBEDDINGS_DIR.mkdir(parents=True, exist_ok=True)
+        np.save(EMBEDDINGS_DIR / "im4_embeddings.npy", emb4)
+        print(f"✅ Saved im4 embeddings: {emb4.shape}")
 
-    # 3. Process im7 (Prediction Results)
-    print("🎬 Processing Prediction Results (im7)...")
-    im7_paths = get_vfi_results(BASE_DATA_DIR, "im7_pred.webp")
     if im7_paths:
-        im7_embeddings = extractor.extract_features(model, im7_paths)
-        save_embeddings(im7_embeddings, "im7_embeddings.npy")
-    else:
-        print(f"⚠️ No im7_pred.webp files found in {BASE_DATA_DIR}/[interpolation|prediction]")
+        emb7 = extractor.extract_features(feature_model, im7_paths)
+        np.save(EMBEDDINGS_DIR / "im7_embeddings.npy", emb7)
+        print(f"✅ Saved im7 embeddings: {emb7.shape}")
 
 if __name__ == "__main__":
-    run_decay_embedding_extraction()
+    # 1. Load VFI Model
+    try:
+        vfi_model = load_vfi_model(OLD_MODEL_PATH)
+    except Exception as e:
+        print(f"❌ Failed to load VFI model: {e}")
+        sys.exit(1)
+
+    # 2. Run Inference to create the frames
+    run_vfi_inference_on_golden_set(vfi_model)
+
+    # 3. Extract Embeddings from those frames
+    extract_and_save_old_model_embeddings()
