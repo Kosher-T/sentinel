@@ -9,7 +9,6 @@ import feature_extractor as extractor
 project_root = Path(__file__).parents[1]
 sys.path.append(str(project_root))
 
-
 # --- SYSTEM AGNOSTIC RELATIVE PATHING ---
 # We anchor everything to the project root (sentinel/)
 BASE_DATA_DIR = project_root / "data" / "vfi_golden_set_webp"
