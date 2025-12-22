@@ -10,7 +10,7 @@ from keras.applications.vgg16 import VGG16, preprocess_input as vgg_preprocess
 from keras.applications.resnet import ResNet50, preprocess_input as resnet_preprocess
 import numpy as np
 import os
-import model_config 
+import model_config
 
 MODEL_FACTORY = {
     "MobileNetV2": {"class": MobileNetV2,
