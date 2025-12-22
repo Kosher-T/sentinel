@@ -11,7 +11,7 @@ sys.path.append(str(project_root))
 
 # --- SYSTEM AGNOSTIC RELATIVE PATHING ---
 # We anchor everything to the project root (sentinel/)
-BASE_DATA_DIR = project_root / "data" / "vfi_golden_set_webp"
+BASE_DATA_DIR = project_root / "data" / "golden_set_septuplets"
 OUTPUT_EMBEDDINGS_DIR = project_root / "data" / "model_decay" / "embeddings"
 
 def get_vfi_results(root_dir, frame_type="im4_pred.webp"):
@@ -20,7 +20,7 @@ def get_vfi_results(root_dir, frame_type="im4_pred.webp"):
     Paths are built relative to the project root.
     """
     image_paths = []
-    # Folder structure: sentinel/data/vfi_golden_set_webp/[interpolation|prediction]/001/im4_pred.webp
+    # Folder structure: sentinel/data/golden_set_septuplets/[interpolation|prediction]/001/im4_pred.webp
     for sub_type in ["interpolation", "prediction"]:
         search_path = root_dir / sub_type
         if not search_path.exists():
