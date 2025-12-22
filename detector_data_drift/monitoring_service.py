@@ -3,7 +3,7 @@ import sys
 import sqlite3
 import datetime
 import numpy as np
-import drift_detector as detector
+import detector_data_drift.feature_extractor as detector
 import drift_analyzer as analyzer
 
 # --- CONFIGURATION ---

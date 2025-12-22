@@ -1,3 +1,7 @@
+# Receives both baseline and drifted datasets as numpy arrays.
+# Uses Wasserstein Distance (Earth Mover's Distance) to quantify drift.
+# Reduces dimensionality with PCA before distance calculation.
+
 import numpy as np
 from scipy.stats import wasserstein_distance
 from sklearn.decomposition import PCA
