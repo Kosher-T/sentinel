@@ -16,7 +16,7 @@ import platform
 import psutil
 from pathlib import Path
 import feature_extractor as extractor
-from drift_analyzer import calculate_decay_score
+import drift_analyzer
 import all_config as config
 
 os.environ["CUDA_VISIBLE_DEVICES"] = config.CUDA_VISIBLE_DEVICES
@@ -61,12 +61,8 @@ def prepare_input_sequence(seq_path):
     return np.expand_dims(input_data, axis=0), original_dims
 
 def run_vfi_inference(vfi_model, output_base_dir, model_name="model", force=False):
-    """
-    Returns True if at least one new sequence was processed, False otherwise.
-    """
     print(f"\n🎬 Inference Start: {model_name}")
     print("-" * 30)
-    
     raw_data_path = config.BASE_DATA_DIR / "sequences" 
     if not raw_data_path.exists():
         print(f"❌ Sequence data missing at {raw_data_path}")
@@ -94,7 +90,6 @@ def run_vfi_inference(vfi_model, output_base_dir, model_name="model", force=Fals
 
         cv2.imwrite(str(output_seq_path / "im4_pred.webp"), cv2.cvtColor(im4_final, cv2.COLOR_RGB2BGR))
         cv2.imwrite(str(output_seq_path / "im7_pred.webp"), cv2.cvtColor(im7_final, cv2.COLOR_RGB2BGR))
-        
         processed_count += 1
         if processed_count % 10 == 0:
             print(f"   > Processed {processed_count} sequences...")
@@ -103,17 +98,11 @@ def run_vfi_inference(vfi_model, output_base_dir, model_name="model", force=Fals
     if processed_count > 0:
         print(f"✅ Completed inference for {model_name} ({processed_count} sequences processed).")
         return True
-    else:
-        print(f"ℹ️  Skipped inference for {model_name} (All {skipped_count} sequences already exist).")
-        return False
+    return False
 
 def extract_and_save_embeddings(results_dir, model_id, force=False):
-    """
-    force=True ensures we rerun extraction if inference just happened.
-    """
     print(f"\n🚀 Feature Extraction: {model_id}")
     print("-" * 30)
-    
     feature_model = extractor.create_embedding_model()
     target_emb_dir = config.EMBEDDINGS_ROOT / model_id
     target_emb_dir.mkdir(parents=True, exist_ok=True)
@@ -129,100 +118,97 @@ def extract_and_save_embeddings(results_dir, model_id, force=False):
     for tag, paths in [("im4", im4_paths), ("im7", im7_paths)]:
         if paths:
             save_file = target_emb_dir / f"{tag}_embeddings.npy"
-            
             if not force and save_file.exists():
                 print(f"   ℹ️  {model_id} {tag} embeddings exist. Skipping.")
                 continue
-                
             print(f"   > Extracting {tag} features ({len(paths)} frames)...")
             emb = extractor.extract_features(feature_model, paths)
             np.save(save_file, emb)
-            print(f"   ✅ Saved {model_id} {tag} embeddings.")
             tasks_run += 1
-            
     if tasks_run == 0:
         print(f"✅ All embeddings for {model_id} are up to date.")
 
 def run_decay_analysis():
     print("\n" + "=" * 40)
-    print("⚖️  STARTING DECAY ANALYSIS")
+    print("⚖️  STARTING MULTI-METRIC DECAY ANALYSIS")
     print("=" * 40)
-    
-    fresh_emb_dir = config.EMBEDDINGS_ROOT / "fresh_model"
-    old_emb_dir = config.EMBEDDINGS_ROOT / "old_model"
     
     tasks = ["im4", "im7"]
     final_report = {}
 
     for task in tasks:
-        fresh_path = fresh_emb_dir / f"{task}_embeddings.npy"
-        old_path = old_emb_dir / f"{task}_embeddings.npy"
+        fresh_emb = config.EMBEDDINGS_ROOT / "fresh_model" / f"{task}_embeddings.npy"
+        old_emb = config.EMBEDDINGS_ROOT / "old_model" / f"{task}_embeddings.npy"
         
-        if fresh_path.exists() and old_path.exists():
-            print(f"\n📊 Comparing {task} embeddings...")
-            try:
-                f_emb = np.load(fresh_path)
-                o_emb = np.load(old_path)
-                score = calculate_decay_score(f_emb, o_emb)
-                final_report[task] = score
-            except Exception as e:
-                print(f"   -> Error calculating score: {e}")
-        else:
-             print(f"⚠️  Missing embeddings for {task}. Skipping comparison.")
+        if not (fresh_emb.exists() and old_emb.exists()):
+            continue
+
+        print(f"\n📊 Calculating Visual Perceptual Metrics for {task}...")
+        psnrs, ssims = [], []
+        
+        # Iterate through actual results to get pixel-level comparison
+        seq_folders = sorted([d for d in config.FRESH_RESULTS_DIR.iterdir() if d.is_dir()])
+        for seq_dir in seq_folders:
+            fresh_img = seq_dir / f"{task}_pred.webp"
+            old_img = config.OLD_RESULTS_DIR / seq_dir.name / f"{task}_pred.webp"
+            
+            if fresh_img.exists() and old_img.exists():
+                p, s = calculate_visual_metrics(fresh_img, old_img)  #type: ignore
+                if p is not None:
+                    psnrs.append(p)
+                    ssims.append(s)
+
+        avg_psnr = np.mean(psnrs) if psnrs else None
+        avg_ssim = np.mean(ssims) if ssims else None
+        
+        print(f"   > Mean PSNR: {avg_psnr:.2f} dB")
+        print(f"   > Mean SSIM: {avg_ssim:.4f}")
+
+        # Combine with Statistical (Wasserstein) Drift
+        f_emb_data = np.load(fresh_emb)
+        o_emb_data = np.load(old_emb)
+        final_report[task] = calculate_decay_score(f_emb_data, o_emb_data, avg_psnr, avg_ssim)  #type: ignore
 
     if final_report:
         print("\n" + "="*40)
-        print("📊 FINAL MODEL DECAY REPORT")
+        print("📊 AGGREGATE MODEL DECAY REPORT")
         print("="*40)
         for task, score in final_report.items():
             status = "🔴 DEGRADED" if score > 15 else "🟢 STABLE"
             label = "Interpolation" if task == "im4" else "Prediction"
-            print(f"{label:<15}: {score:>6}% | {status}")
+            print(f"{label:<15}: {score:>6}% Decay | {status}")
         print("="*40 + "\n")
-    else:
-        print("\n❌ No valid comparisons could be made.\n")
 
 if __name__ == "__main__":
     log_environment()
     
-    # --- STEP 1: FRESH MODEL ---
-    fresh_inference_happened = False
+    # Process Fresh
+    fresh_inf = False
     try:
         config.FRESH_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        # We only skip loading the model if we are sure we don't need it
-        # But run_vfi_inference handles the skip logic sequence by sequence
         fresh_model = load_vfi_model(config.FRESH_MODEL_PATH)
         if fresh_model:
-            fresh_inference_happened = run_vfi_inference(fresh_model, config.FRESH_RESULTS_DIR, "Fresh Model")
+            fresh_inf = run_vfi_inference(fresh_model, config.FRESH_RESULTS_DIR, "Fresh Model")
             del fresh_model
             keras.backend.clear_session()
-    except Exception as e:
-        print(f"⚠️ Fresh model processing error: {e}")
+    except Exception as e: print(f"⚠️ Fresh error: {e}")
+    extract_and_save_embeddings(config.FRESH_RESULTS_DIR, "fresh_model", force=fresh_inf)
 
-    # If inference happened, we force extraction. Otherwise, we check if npy exists.
-    extract_and_save_embeddings(config.FRESH_RESULTS_DIR, "fresh_model", force=fresh_inference_happened)
-
-    # --- STEP 2: OLD MODEL ---
+    # Process Old
     print("\n" + "-"*40)
     user_choice = input("🔄 Run inference for Old Model? (y/n) [default: y]: ").strip().lower()
-    run_old_requested = user_choice != 'n'
-
-    if run_old_requested:
+    if user_choice != 'n':
+        old_inf = False
         try:
             config.OLD_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
             old_model = load_vfi_model(config.OLD_MODEL_PATH)
             if old_model:
-                # User specifically asked for this, so we force=True to regenerate images
-                old_inference_happened = run_vfi_inference(old_model, config.OLD_RESULTS_DIR, "Old Model", force=True)
-                extract_and_save_embeddings(config.OLD_RESULTS_DIR, "old_model", force=old_inference_happened)
+                old_inf = run_vfi_inference(old_model, config.OLD_RESULTS_DIR, "Old Model", force=True)
+                extract_and_save_embeddings(config.OLD_RESULTS_DIR, "old_model", force=old_inf)
                 del old_model
                 keras.backend.clear_session()
-        except Exception as e:
-            print(f"❌ Error during old model processing: {e}")
-            sys.exit(1)
+        except Exception as e: print(f"❌ Old error: {e}")
     else:
-        print("\nℹ️  Skipping Old Model inference. Checking for existing embeddings...")
         extract_and_save_embeddings(config.OLD_RESULTS_DIR, "old_model", force=False)
 
-    # --- STEP 3: ANALYZE ---
     run_decay_analysis()
