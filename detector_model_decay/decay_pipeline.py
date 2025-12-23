@@ -153,7 +153,7 @@ def run_decay_analysis():
             old_img = config.OLD_RESULTS_DIR / seq_dir.name / f"{task}_pred.webp"
             
             if fresh_img.exists() and old_img.exists():
-                p, s = calculate_visual_metrics(fresh_img, old_img)  #type: ignore
+                p, s = calculate_visual_metrics(fresh_img, old_img)
                 if p is not None:
                     psnrs.append(p)
                     ssims.append(s)
@@ -167,13 +167,14 @@ def run_decay_analysis():
         # Combine with Statistical (Wasserstein) Drift
         f_emb_data = np.load(fresh_emb)
         o_emb_data = np.load(old_emb)
-        final_report[task] = calculate_decay_score(f_emb_data, o_emb_data, avg_psnr, avg_ssim)  #type: ignore
+        final_report[task] = calculate_decay_score(f_emb_data, o_emb_data, avg_psnr, avg_ssim)
 
     if final_report:
         print("\n" + "="*40)
         print("📊 AGGREGATE MODEL DECAY REPORT")
         print("="*40)
         for task, score in final_report.items():
+            # Threshold set to 15% based on loss log proportions
             status = "🔴 DEGRADED" if score > 15 else "🟢 STABLE"
             label = "Interpolation" if task == "im4" else "Prediction"
             print(f"{label:<15}: {score:>6}% Decay | {status}")
@@ -203,6 +204,7 @@ if __name__ == "__main__":
             config.OLD_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
             old_model = load_vfi_model(config.OLD_MODEL_PATH)
             if old_model:
+                # Force=True to ensure we regenerate frames for pixel-level PSNR/SSIM
                 old_inf = run_vfi_inference(old_model, config.OLD_RESULTS_DIR, "Old Model", force=True)
                 extract_and_save_embeddings(config.OLD_RESULTS_DIR, "old_model", force=old_inf)
                 del old_model
