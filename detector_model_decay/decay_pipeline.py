@@ -16,7 +16,7 @@ import platform
 import psutil
 from pathlib import Path
 import feature_extractor as extractor
-import drift_analyzer
+from drift_analyzer import calculate_decay_score, calculate_visual_metrics
 import all_config as config
 
 os.environ["CUDA_VISIBLE_DEVICES"] = config.CUDA_VISIBLE_DEVICES
