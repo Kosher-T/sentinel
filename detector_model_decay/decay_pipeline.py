@@ -1,6 +1,7 @@
 # Logs environment details (OS, CPU, Backend) for hardware parity debugging.
 # Loads VFI models (old and fresh) to generate interpolated frames on the golden set.
 # Extracts and saves feature embeddings for both models to be used for decay analysis.
+# Performs Wasserstein Distance analysis to quantify model decay.
 
 import os
 import numpy as np
@@ -11,6 +12,19 @@ import platform
 import psutil
 from pathlib import Path
 import feature_extractor as extractor
+
+# --- PROJECT ROOT CALCULATION ---
+# We calculate this early to ensure imports work
+project_root = Path(__file__).resolve().parents[1]
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
+
+# Import the analyzer logic (must be in detector_model_decay folder)
+try:
+    from detector_model_decay.drift_analyzer import calculate_decay_score
+except ImportError:
+    # Fallback if running from within the folder directly without package structure
+    from drift_analyzer import calculate_decay_score
 
 # --- ENVIRONMENTAL DIAGNOSTICS ---
 def log_environment():
@@ -37,11 +51,6 @@ def log_environment():
 # --- OPTIMIZED CPU CONFIGURATION ---
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1" 
 keras.mixed_precision.set_global_policy('float32')
-
-# --- PROJECT ROOT CALCULATION ---
-project_root = Path(__file__).resolve().parents[1]
-if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
 
 # --- PATH CONFIGURATION ---
 BASE_DATA_DIR = project_root / "data" / "golden_set_septuplets"
@@ -76,6 +85,7 @@ def prepare_input_sequence(seq_path):
             original_dims = (w, h)
 
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        # Use INTER_AREA for downscaling - standard for many ML pipelines
         img_resized = cv2.resize(img_rgb, (256, 256), interpolation=cv2.INTER_AREA)
         frames.append(img_resized)
     
@@ -137,6 +147,50 @@ def extract_and_save_embeddings(results_dir, model_id):
             np.save(target_emb_dir / f"{tag}_embeddings.npy", emb)
             print(f"✅ Saved {model_id} {tag} embeddings.")
 
+# --- DECAY ANALYSIS HELPER ---
+
+def run_decay_analysis():
+    """
+    Loads generated embeddings and runs Wasserstein Distance analysis.
+    """
+    print("\n⚖️  STARTING DECAY ANALYSIS...")
+    
+    fresh_emb_dir = EMBEDDINGS_ROOT / "fresh_model"
+    old_emb_dir = EMBEDDINGS_ROOT / "old_model"
+    
+    tasks = ["im4", "im7"]
+    final_report = {}
+
+    for task in tasks:
+        fresh_path = fresh_emb_dir / f"{task}_embeddings.npy"
+        old_path = old_emb_dir / f"{task}_embeddings.npy"
+        
+        if fresh_path.exists() and old_path.exists():
+            print(f"📊 Comparing {task} embeddings...")
+            try:
+                f_emb = np.load(fresh_path)
+                o_emb = np.load(old_path)
+                
+                score = calculate_decay_score(f_emb, o_emb)
+                final_report[task] = score
+            except Exception as e:
+                print(f"   -> Error calculating score: {e}")
+        else:
+             print(f"⚠️  Missing embeddings for {task}. Skipping comparison.")
+
+    # Verdict Report
+    if final_report:
+        print("\n" + "="*30)
+        print("📊 FINAL MODEL DECAY REPORT")
+        print("="*30)
+        for task, score in final_report.items():
+            status = "🔴 DEGRADED" if score > 15 else "🟢 STABLE"
+            label = "Interpolation" if task == "im4" else "Prediction"
+            print(f"{label:<15}: {score:>6}% | {status}")
+        print("="*30)
+    else:
+        print("❌ No valid comparisons could be made.")
+
 if __name__ == "__main__":
     log_environment()
     
@@ -161,4 +215,5 @@ if __name__ == "__main__":
         print(f"❌ Error: {e}")
         sys.exit(1)
 
-    print("\n🎉 Model Decay Check Data Generation Complete.")
+    # Run the math comparison
+    run_decay_analysis()
