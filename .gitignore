@@ -6,6 +6,8 @@ data/golden_set_septuplets2
 # data/golden_set_septuplets1
 
 
+one_time_tool.py
+
 
 *.7z
 *.mp4
