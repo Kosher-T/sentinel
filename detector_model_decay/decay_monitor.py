@@ -1,16 +1,40 @@
+# Loads VFI models (old and fresh) to generate interpolated frames on the golden set,
+# and extracts feature embeddings for decay monitoring.
+# Also compares the embeddings to quantify model decay.
+# Now logs environment details for debugging purposes.
+
 import os
 import numpy as np
 import sys
 import cv2
 import keras
+import platform
+import psutil
 from pathlib import Path
 import feature_extractor as extractor
-from concurrent.futures import ThreadPoolExecutor
+
+# --- ENVIRONMENTAL DIAGNOSTICS ---
+def log_environment():
+    print("-" * 30)
+    print("🖥️  ENVIRONMENT DIAGNOSTICS")
+    print(f"OS: {platform.system()} {platform.release()}")
+    print(f"Processor: {platform.processor()}")
+    print(f"Physical Cores: {psutil.cpu_count(logical=False)}")
+    print(f"Keras Backend: {keras.backend.backend()}")
+    print(f"OpenCV Version: {cv2.__version__}")
+    
+    # Check if we are accidentally using a GPU we didn't know about
+    try:
+        import tensorflow as tf
+        gpu_devices = tf.config.list_physical_devices('GPU')
+        print(f"GPU Detected: {'Yes' if gpu_devices else 'No (Pure CPU Mode)'}")
+    except:
+        print("GPU Detection: Failed to load driver check.")
+    print("-" * 30)
 
 # --- OPTIMIZED CPU CONFIGURATION ---
-# Since we are skipping the 2.3GB CUDA Toolkit, we force Keras to optimize for CPU math.
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1" 
-keras.mixed_precision.set_global_policy('float32') # Standard for CPU stability
+keras.mixed_precision.set_global_policy('float32')
 
 # --- PROJECT ROOT CALCULATION ---
 project_root = Path(__file__).resolve().parents[1]
@@ -29,16 +53,13 @@ EMBEDDINGS_ROOT = project_root / "data" / "model_decay" / "embeddings"
 # --- VFI INFERENCE HELPERS ---
 
 def load_vfi_model(model_path):
-    """Loads a VFI model. Note: compile=False avoids needing training optimizers on CPU."""
     print(f"Loading VFI Model: {model_path}")
     return keras.models.load_model(model_path, compile=False)
 
 def prepare_input_sequence(seq_path):
-    """Loads im1-im6, resizes to 256x256."""
     frames = []
     original_dims = None
     
-    # Load frames 1-6
     for i in range(1, 7):
         img_path = seq_path / f"im{i}.webp"
         if not img_path.exists():
@@ -53,15 +74,14 @@ def prepare_input_sequence(seq_path):
             original_dims = (w, h)
 
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img_resized = cv2.resize(img_rgb, (256, 256))
+        # Use INTER_AREA for downscaling - standard for many ML pipelines
+        img_resized = cv2.resize(img_rgb, (256, 256), interpolation=cv2.INTER_AREA)
         frames.append(img_resized)
     
-    # Concatenate along channel axis (18 channels total)
     input_data = np.concatenate(frames, axis=-1).astype('float32') / 255.0
     return np.expand_dims(input_data, axis=0), original_dims
 
 def run_vfi_inference(vfi_model, output_base_dir, model_name="model"):
-    """Runs inference across the golden set sequences."""
     print(f"🎬 Inference Start: {model_name}")
     
     raw_data_path = BASE_DATA_DIR / "sequences" 
@@ -75,7 +95,6 @@ def run_vfi_inference(vfi_model, output_base_dir, model_name="model"):
         seq_id = seq_dir.name
         output_seq_path = output_base_dir / seq_id
         
-        # Check if already processed to save CPU time
         if (output_seq_path / "im7_pred.webp").exists():
             continue
 
@@ -84,14 +103,12 @@ def run_vfi_inference(vfi_model, output_base_dir, model_name="model"):
         
         if input_tensor is None: continue
 
-        # Model Prediction
         preds = vfi_model.predict(input_tensor, verbose=0)
         
-        # Extract heads
         im7_raw = (preds[0][0] * 255).astype(np.uint8) 
         im4_raw = (preds[1][0] * 255).astype(np.uint8)
 
-        # Upscale to original size for visual comparison
+        # Upscale with INTER_CUBIC - note that this is where CPU/GPU can visually diverge
         im7_final = cv2.resize(im7_raw, original_dims, interpolation=cv2.INTER_CUBIC)
         im4_final = cv2.resize(im4_raw, original_dims, interpolation=cv2.INTER_CUBIC)
 
@@ -101,7 +118,6 @@ def run_vfi_inference(vfi_model, output_base_dir, model_name="model"):
     print(f"✅ Completed inference for {model_name}")
 
 def extract_and_save_embeddings(results_dir, model_id):
-    """Generates feature embeddings for the predicted frames."""
     print(f"🚀 Feature Extraction: {model_id}")
     
     feature_model = extractor.create_embedding_model()
@@ -117,13 +133,14 @@ def extract_and_save_embeddings(results_dir, model_id):
 
     for tag, paths in [("im4", im4_paths), ("im7", im7_paths)]:
         if paths:
-            # feature_extractor handles batching internally
             emb = extractor.extract_features(feature_model, paths)
             np.save(target_emb_dir / f"{tag}_embeddings.npy", emb)
             print(f"✅ Saved {model_id} {tag} embeddings.")
 
 if __name__ == "__main__":
-    # Process fresh baseline if needed
+    log_environment()
+    
+    # Process fresh baseline
     try:
         FRESH_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         fresh_model = load_vfi_model(FRESH_MODEL_PATH)
@@ -134,7 +151,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"⚠️ Fresh model processing skipped: {e}")
 
-    # Process old model for decay analysis
+    # Process old model
     try:
         OLD_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         old_model = load_vfi_model(OLD_MODEL_PATH)
