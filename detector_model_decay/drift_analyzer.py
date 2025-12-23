@@ -8,72 +8,89 @@ from sklearn.decomposition import PCA
 import os
 
 # --- CONFIGURATION ---
-# SENSITIVITY_FACTOR controls how quickly the score jumps to 100%.
-# Dropping from 2.0 to 1.5 to provide a slightly more relaxed scoring for the magnitude of drift.
-SENSITIVITY_FACTOR = 1.5 
+# SENSITIVITY_FACTOR: Adjusts how "alarmist" the decay score is.
+# For VFI models, small visual shifts in embeddings often represent significant quality loss.
+SENSITIVITY_FACTOR = 2.5
 
-def analyze_drift(baseline, drifted):
+def calculate_decay_score(fresh_embeddings, old_embeddings):
     """
-    1. Reduces dimensionality using PCA.
-    2. Calculates Wasserstein Distance (Earth Mover's Distance).
-    3. Maps distance to a 0-100% score using a sigmoid-like function.
+    Quantifies the distance between a freshly trained model's performance
+    and a degraded/older version using Wasserstein Distance.
+    
+    Returns:
+        float: A decay percentage (0% = identical, 100% = completely different distribution).
     """
-    if baseline.shape[1] != drifted.shape[1]:
-        raise ValueError("Embedding feature counts do not match!")
-        
-    print(f"Original Feature Count: {baseline.shape[1]}")
     
-    # --- STEP 1: Dimensionality Reduction (PCA) ---
-    # We must have enough samples (rows) to perform PCA. Min samples = min(len(datasets))
-    n_samples_min = min(len(baseline), len(drifted))
-    n_features = baseline.shape[1]
+    if fresh_embeddings.shape[1] != old_embeddings.shape[1]:
+        raise ValueError("Embedding dimensions do not match between models.")
+
+    print(f"📊 Analyzing Decay across {fresh_embeddings.shape[0]} samples...")
+
+    # --- STEP 1: Dimensionality Reduction ---
+    # We use PCA to focus on the most significant visual features (contours, motion blur patterns)
+    # and ignore minor pixel noise.
+    n_components = min(fresh_embeddings.shape[0], 50) # Use top 50 features or less
     
-    # If the number of features is greater than min samples, PCA will fail or be meaningless.
-    if n_samples_min <= n_features:
-        print(f"WARNING: Too few samples ({n_samples_min}) for full PCA. Capping components.")
-        # Target variance might be unreachable, cap components by sample size
-        n_components_pca = n_samples_min - 1 if n_samples_min > 1 else 1
-    else:
-        # Default target variance approach
-        n_components_pca = 0.95
-
-    print("Running PCA to reduce noise...")
-    try:
-        pca = PCA(n_components=n_components_pca)
-        pca.fit(baseline)
-        baseline_pca = pca.transform(baseline)
-        drifted_pca = pca.transform(drifted)
-        print(f"PCA reduced features from {n_features} to {baseline_pca.shape[1]}")
-    except Exception as e:
-        print(f"PCA Failed. Falling back to raw features. Error: {e}")
-        baseline_pca = baseline
-        drifted_pca = drifted
-
-    # --- STEP 2: Wasserstein Distance ---
-    num_features = baseline_pca.shape[1]
-    total_distance = 0.0
-
-    # We calculate the distance for every feature and average it
-    for i in range(num_features):
-        b_feat = baseline_pca[:, i]
-        d_feat = drifted_pca[:, i]
-        
-        # Calculate Earth Mover's Distance for this feature
-        wd = wasserstein_distance(b_feat, d_feat)
-        total_distance += wd
-
-    avg_wasserstein_dist = total_distance / num_features
-
-    # --- STEP 3: Normalize to 0-100% Scale ---
-    # Formula: Score = (1 - e^(-sensitivity * distance)) * 100
+    pca = PCA(n_components=n_components)
+    fresh_pca = pca.fit_transform(fresh_embeddings)
+    old_pca = pca.transform(old_embeddings)
     
-    drift_score = (1 - np.exp(-SENSITIVITY_FACTOR * avg_wasserstein_dist)) * 100
+    print(f"🔹 PCA reduction: {fresh_embeddings.shape[1]} -> {n_components} features.")
 
-    print("\n--- Summary of Drift Detection (Wasserstein) ---")
-    print(f"Average Raw Distance: {avg_wasserstein_dist:.4f}")
-    print(f"Calculated Drift Score: {drift_score:.2f}%")
+    # --- STEP 2: Wasserstein Distance (Earth Mover's Distance) ---
+    # We measure the 'cost' of turning the fresh distribution into the old one.
+    feature_distances = []
+    for i in range(n_components):
+        dist = wasserstein_distance(fresh_pca[:, i], old_pca[:, i])
+        feature_distances.append(dist)
     
-    return drift_score, None
+    avg_dist = np.mean(feature_distances)
+
+    # --- STEP 3: Non-linear Mapping to Percent ---
+    # Using an exponential growth function so that decay becomes 
+    # more apparent as the distance increases.
+    decay_percent = (1 - np.exp(-SENSITIVITY_FACTOR * avg_dist)) * 100
+    
+    return round(float(decay_percent), 2)
+
+def run_analysis_pipeline(embeddings_root):
+    """
+    Loads saved embeddings and runs the comparison for both 
+    Interpolation (im4) and Prediction (im7) heads.
+    """
+    # Paths for Fresh Model
+    fresh_im4 = os.path.join(embeddings_root, "fresh_model", "im4_embeddings.npy")
+    fresh_im7 = os.path.join(embeddings_root, "fresh_model", "im7_embeddings.npy")
+    
+    # Paths for Old Model
+    old_im4 = os.path.join(embeddings_root, "old_model", "im4_embeddings.npy")
+    old_im7 = os.path.join(embeddings_root, "old_model", "im7_embeddings.npy")
+
+    results = {}
+
+    # Check and analyze im4 (Interpolation)
+    if os.path.exists(fresh_im4) and os.path.exists(old_im4):
+        f_emb = np.load(fresh_im4)
+        o_emb = np.load(old_im4)
+        results['interpolation_decay'] = calculate_decay_score(f_emb, o_emb)
+    
+    # Check and analyze im7 (Prediction)
+    if os.path.exists(fresh_im7) and os.path.exists(old_im7):
+        f_emb = np.load(fresh_im7)
+        o_emb = np.load(old_im7)
+        results['prediction_decay'] = calculate_decay_score(f_emb, o_emb)
+
+    return results
 
 if __name__ == "__main__":
-    pass
+    # Local test path logic
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    emb_path = os.path.join(project_root, "data", "model_decay", "embeddings")
+    
+    if os.path.exists(emb_path):
+        scores = run_analysis_pipeline(emb_path)
+        print("\n--- FINAL DECAY REPORT ---")
+        for task, score in scores.items():
+            print(f"🚨 {task.replace('_', ' ').title()}: {score}%")
+    else:
+        print(f"❌ Embeddings directory not found at {emb_path}")
