@@ -2,8 +2,9 @@ venv/
 __pycache__/
 data/golden_set_septuplets1/
 data/vfi_golden_set_webp/
-data/golden_set_septuplets2
-# data/golden_set_septuplets1
+data/golden_set_septuplets2/
+# data/golden_set_septuplets1/
+data/model_decay/
 
 
 one_time_tool.py
