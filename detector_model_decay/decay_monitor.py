@@ -2,10 +2,15 @@ import os
 import numpy as np
 import sys
 import cv2
-import tensorflow as tf
 import keras
 from pathlib import Path
 import feature_extractor as extractor
+from concurrent.futures import ThreadPoolExecutor
+
+# --- OPTIMIZED CPU CONFIGURATION ---
+# Since we are skipping the 2.3GB CUDA Toolkit, we force Keras to optimize for CPU math.
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1" 
+keras.mixed_precision.set_global_policy('float32') # Standard for CPU stability
 
 # --- PROJECT ROOT CALCULATION ---
 project_root = Path(__file__).resolve().parents[1]
@@ -14,55 +19,54 @@ if str(project_root) not in sys.path:
 
 # --- PATH CONFIGURATION ---
 BASE_DATA_DIR = project_root / "data" / "golden_set_septuplets"
-
-# Model paths based on your directory structure
 OLD_MODEL_PATH = BASE_DATA_DIR / "models" / "old_model" / "vfi_septuplet_epoch_31.keras"
 FRESH_MODEL_PATH = BASE_DATA_DIR / "models" / "fresh_model" / "vfi_septuplet_epoch_35.keras"
 
-# Output directories for frames
 OLD_RESULTS_DIR = project_root / "data" / "model_decay" / "old_model_results"
 FRESH_RESULTS_DIR = project_root / "data" / "model_decay" / "fresh_model_results"
-
-# Output for embeddings
 EMBEDDINGS_ROOT = project_root / "data" / "model_decay" / "embeddings"
 
 # --- VFI INFERENCE HELPERS ---
 
 def load_vfi_model(model_path):
-    """Loads a VFI model with custom objects."""
+    """Loads a VFI model. Note: compile=False avoids needing training optimizers on CPU."""
     print(f"Loading VFI Model: {model_path}")
     return keras.models.load_model(model_path, compile=False)
 
 def prepare_input_sequence(seq_path):
-    """Loads im1-im3 and im5-im6 for im4 interpolation, and im1-im6 for im7 prediction."""
+    """Loads im1-im6, resizes to 256x256."""
     frames = []
-    # We need im1, im2, im3, im4(skipped), im5, im6, im7(target)
-    # For the model input (6 frames concatenated), we use indices 1-6
+    original_dims = None
+    
+    # Load frames 1-6
     for i in range(1, 7):
         img_path = seq_path / f"im{i}.webp"
         if not img_path.exists():
-            img_path = seq_path / f"im{i}.png" # Fallback
+            img_path = seq_path / f"im{i}.png"
             
         img = cv2.imread(str(img_path))
         if img is None:
-            return None
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = cv2.resize(img, (256, 256)) # Model requirement
-        frames.append(img)
-    
-    # Shape: (1, 256, 256, 18)
-    input_data = np.concatenate(frames, axis=-1).astype('float32') / 255.0
-    return np.expand_dims(input_data, axis=0)
+            return None, None
+            
+        if original_dims is None:
+            h, w = img.shape[:2]
+            original_dims = (w, h)
 
-# --- CORE LOGIC ---
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img_resized = cv2.resize(img_rgb, (256, 256))
+        frames.append(img_resized)
+    
+    # Concatenate along channel axis (18 channels total)
+    input_data = np.concatenate(frames, axis=-1).astype('float32') / 255.0
+    return np.expand_dims(input_data, axis=0), original_dims
 
 def run_vfi_inference(vfi_model, output_base_dir, model_name="model"):
-    """Generates im4_pred and im7_pred for all sequences in the golden set."""
-    print(f"🎬 Starting VFI Inference for {model_name}...")
+    """Runs inference across the golden set sequences."""
+    print(f"🎬 Inference Start: {model_name}")
     
     raw_data_path = BASE_DATA_DIR / "sequences" 
     if not raw_data_path.exists():
-        print(f"❌ Sequence data not found at {raw_data_path}")
+        print(f"❌ Sequence data missing at {raw_data_path}")
         return
 
     sequence_dirs = sorted([d for d in raw_data_path.iterdir() if d.is_dir()])
@@ -70,75 +74,74 @@ def run_vfi_inference(vfi_model, output_base_dir, model_name="model"):
     for seq_dir in sequence_dirs:
         seq_id = seq_dir.name
         output_seq_path = output_base_dir / seq_id
-        output_seq_path.mkdir(parents=True, exist_ok=True)
-
-        input_tensor = prepare_input_sequence(seq_dir)
-        if input_tensor is None:
+        
+        # Check if already processed to save CPU time
+        if (output_seq_path / "im7_pred.webp").exists():
             continue
 
-        # Inference: Model has two heads [prediction_head, interpolation_head]
+        output_seq_path.mkdir(parents=True, exist_ok=True)
+        input_tensor, original_dims = prepare_input_sequence(seq_dir)
+        
+        if input_tensor is None: continue
+
+        # Model Prediction
         preds = vfi_model.predict(input_tensor, verbose=0)
         
-        im7_pred = (preds[0][0] * 255).astype(np.uint8) # Prediction Head
-        im4_pred = (preds[1][0] * 255).astype(np.uint8) # Interpolation Head
+        # Extract heads
+        im7_raw = (preds[0][0] * 255).astype(np.uint8) 
+        im4_raw = (preds[1][0] * 255).astype(np.uint8)
 
-        # Save results
-        cv2.imwrite(str(output_seq_path / "im4_pred.webp"), cv2.cvtColor(im4_pred, cv2.COLOR_RGB2BGR))
-        cv2.imwrite(str(output_seq_path / "im7_pred.webp"), cv2.cvtColor(im7_pred, cv2.COLOR_RGB2BGR))
+        # Upscale to original size for visual comparison
+        im7_final = cv2.resize(im7_raw, original_dims, interpolation=cv2.INTER_CUBIC)
+        im4_final = cv2.resize(im4_raw, original_dims, interpolation=cv2.INTER_CUBIC)
+
+        cv2.imwrite(str(output_seq_path / "im4_pred.webp"), cv2.cvtColor(im4_final, cv2.COLOR_RGB2BGR))
+        cv2.imwrite(str(output_seq_path / "im7_pred.webp"), cv2.cvtColor(im7_final, cv2.COLOR_RGB2BGR))
         
-    print(f"✅ Generated results in {output_base_dir}")
+    print(f"✅ Completed inference for {model_name}")
 
 def extract_and_save_embeddings(results_dir, model_id):
-    """Generates embeddings for the frames generated by a specific model results folder."""
-    print(f"🚀 Extracting Feature Embeddings for {model_id} results...")
+    """Generates feature embeddings for the predicted frames."""
+    print(f"🚀 Feature Extraction: {model_id}")
     
     feature_model = extractor.create_embedding_model()
     target_emb_dir = EMBEDDINGS_ROOT / model_id
     target_emb_dir.mkdir(parents=True, exist_ok=True)
     
-    im4_paths = []
-    im7_paths = []
-    
+    im4_paths, im7_paths = [], []
     for seq_folder in sorted(results_dir.iterdir()):
         if seq_folder.is_dir():
-            p4 = seq_folder / "im4_pred.webp"
-            p7 = seq_folder / "im7_pred.webp"
+            p4, p7 = seq_folder / "im4_pred.webp", seq_folder / "im7_pred.webp"
             if p4.exists(): im4_paths.append(str(p4))
             if p7.exists(): im7_paths.append(str(p7))
 
-    if im4_paths:
-        emb4 = extractor.extract_features(feature_model, im4_paths)
-        np.save(target_emb_dir / "im4_embeddings.npy", emb4)
-        print(f"✅ Saved {model_id} im4 embeddings: {emb4.shape}")
-
-    if im7_paths:
-        emb7 = extractor.extract_features(feature_model, im7_paths)
-        np.save(target_emb_dir / "im7_embeddings.npy", emb7)
-        print(f"✅ Saved {model_id} im7 embeddings: {emb7.shape}")
+    for tag, paths in [("im4", im4_paths), ("im7", im7_paths)]:
+        if paths:
+            # feature_extractor handles batching internally
+            emb = extractor.extract_features(feature_model, paths)
+            np.save(target_emb_dir / f"{tag}_embeddings.npy", emb)
+            print(f"✅ Saved {model_id} {tag} embeddings.")
 
 if __name__ == "__main__":
-    # --- 1. HANDLE FRESH MODEL (Run once) ---
-    # We check if the fresh model results folder exists and has data
-    if not FRESH_RESULTS_DIR.exists() or not any(FRESH_RESULTS_DIR.iterdir()):
-        try:
-            fresh_model = load_vfi_model(FRESH_MODEL_PATH)
-            run_vfi_inference(fresh_model, FRESH_RESULTS_DIR, "Fresh Model")
-            extract_and_save_embeddings(FRESH_RESULTS_DIR, "fresh_model")
-            # Free up memory
-            del fresh_model
-            keras.backend.clear_session()
-        except Exception as e:
-            print(f"⚠️ Error processing fresh model: {e}")
-    else:
-        print("ℹ️ Fresh model results already exist. Skipping inference.")
-
-    # --- 2. HANDLE OLD MODEL (The monitoring target) ---
+    # Process fresh baseline if needed
     try:
+        FRESH_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        fresh_model = load_vfi_model(FRESH_MODEL_PATH)
+        run_vfi_inference(fresh_model, FRESH_RESULTS_DIR, "Fresh Model")
+        extract_and_save_embeddings(FRESH_RESULTS_DIR, "fresh_model")
+        del fresh_model
+        keras.backend.clear_session()
+    except Exception as e:
+        print(f"⚠️ Fresh model processing skipped: {e}")
+
+    # Process old model for decay analysis
+    try:
+        OLD_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         old_model = load_vfi_model(OLD_MODEL_PATH)
         run_vfi_inference(old_model, OLD_RESULTS_DIR, "Old Model")
         extract_and_save_embeddings(OLD_RESULTS_DIR, "old_model")
     except Exception as e:
-        print(f"❌ Failed to process Old Model: {e}")
+        print(f"❌ Error: {e}")
         sys.exit(1)
 
     print("\n🎉 Model Decay Check Data Generation Complete.")
