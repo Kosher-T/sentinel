@@ -10,7 +10,7 @@ from keras.applications.vgg16 import VGG16, preprocess_input as vgg_preprocess
 from keras.applications.resnet import ResNet50, preprocess_input as resnet_preprocess
 import numpy as np
 import os
-import model_config
+import all_config
 
 MODEL_FACTORY = {
     "MobileNetV2": {"class": MobileNetV2,
@@ -25,26 +25,25 @@ BATCH_SIZE = 32
 
 def create_embedding_model():
     """Creates a feature extraction model based on model_config.py."""
-    cfg_type = model_config.EMBEDDING_MODEL_TYPE
+    cfg_type = all_config.EMBEDDING_MODEL_TYPE
     if cfg_type not in MODEL_FACTORY:
         raise ValueError(f"Model {cfg_type} not supported.")
     
     base = MODEL_FACTORY[cfg_type]["class"](
         weights='imagenet', 
         include_top=False, 
-        input_shape=model_config.EMBEDDING_INPUT_SHAPE,
+        input_shape=all_config.EMBEDDING_INPUT_SHAPE,
         pooling='avg'
     )
-    base.summary()
     return base
 
 def extract_features(model, image_paths):
     """Processes a list of image paths and returns a numpy array of embeddings."""
     all_embeddings = []
-    target_h, target_w = model_config.EMBEDDING_INPUT_SHAPE[:2]
+    target_h, target_w = all_config.EMBEDDING_INPUT_SHAPE[:2]
     
     # Get the specific preprocessor for the current model type
-    preprocess_func = MODEL_FACTORY[model_config.EMBEDDING_MODEL_TYPE]["preprocess"]
+    preprocess_func = MODEL_FACTORY[all_config.EMBEDDING_MODEL_TYPE]["preprocess"]
 
     for i in range(0, len(image_paths), BATCH_SIZE):
         batch_paths = image_paths[i:i + BATCH_SIZE]
