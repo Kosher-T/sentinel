@@ -1,7 +1,6 @@
-# Loads VFI models (old and fresh) to generate interpolated frames on the golden set,
-# and extracts feature embeddings for decay monitoring.
-# Also compares the embeddings to quantify model decay.
-# Now logs environment details for debugging purposes.
+# Logs environment details (OS, CPU, Backend) for hardware parity debugging.
+# Loads VFI models (old and fresh) to generate interpolated frames on the golden set.
+# Extracts and saves feature embeddings for both models to be used for decay analysis.
 
 import os
 import numpy as np
@@ -15,6 +14,10 @@ import feature_extractor as extractor
 
 # --- ENVIRONMENTAL DIAGNOSTICS ---
 def log_environment():
+    """
+    Logs hardware and software specs. 
+    Crucial for debugging 'Wobbly Chair' (decay) issues vs 'Hardware' issues.
+    """
     print("-" * 30)
     print("🖥️  ENVIRONMENT DIAGNOSTICS")
     print(f"OS: {platform.system()} {platform.release()}")
@@ -23,7 +26,6 @@ def log_environment():
     print(f"Keras Backend: {keras.backend.backend()}")
     print(f"OpenCV Version: {cv2.__version__}")
     
-    # Check if we are accidentally using a GPU we didn't know about
     try:
         import tensorflow as tf
         gpu_devices = tf.config.list_physical_devices('GPU')
@@ -74,7 +76,6 @@ def prepare_input_sequence(seq_path):
             original_dims = (w, h)
 
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        # Use INTER_AREA for downscaling - standard for many ML pipelines
         img_resized = cv2.resize(img_rgb, (256, 256), interpolation=cv2.INTER_AREA)
         frames.append(img_resized)
     
@@ -108,7 +109,6 @@ def run_vfi_inference(vfi_model, output_base_dir, model_name="model"):
         im7_raw = (preds[0][0] * 255).astype(np.uint8) 
         im4_raw = (preds[1][0] * 255).astype(np.uint8)
 
-        # Upscale with INTER_CUBIC - note that this is where CPU/GPU can visually diverge
         im7_final = cv2.resize(im7_raw, original_dims, interpolation=cv2.INTER_CUBIC)
         im4_final = cv2.resize(im4_raw, original_dims, interpolation=cv2.INTER_CUBIC)
 
