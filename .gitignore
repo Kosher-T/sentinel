@@ -1,9 +1,7 @@
 venv/
 __pycache__/
 
-data/model_decay/fresh_model_results/
-data/model_decay/old_model_results/
-data/model_decay/embeddings/
+data/model_decay/
 
 
 one_time_tool.py
