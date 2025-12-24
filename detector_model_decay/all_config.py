@@ -30,4 +30,4 @@ EMBEDDINGS_ROOT = MODEL_DECAY_ROOT / "embeddings"
 
 # --- SETTINGS & THRESHOLDS ---
 CUDA_VISIBLE_DEVICES = "-1" # Force CPU for local dev
-DECAY_THRESHOLD = 5.0      # Score above this flags a 'Degraded' status
+DECAY_THRESHOLD = 3.0      # Score above this flags a 'Degraded' status
