@@ -3,20 +3,13 @@ import time
 import os
 import sys
 from pathlib import Path
+import all_config as config
 
 # --- DYNAMIC PATH RESOLUTION ---
 # Ensure project root is in sys.path so we can import internal packages
 PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
-
-# Import local project modules
-try:
-    import detector_model_decay.all_config as config
-except ImportError:
-    # Fallback for different execution contexts
-    sys.path.append(str(PROJECT_ROOT / "detector_model_decay"))
-    import all_config as config
 
 # --- ENVIRONMENT & CI DETECTION ---
 IS_CI = os.getenv("GITHUB_ACTIONS") == "true" or os.getenv("DOCKER_ENV") == "true"
