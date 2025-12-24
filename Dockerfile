@@ -9,24 +9,18 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. Set up the working directory inside the container
-WORKDIR /app
-
-# 3. Upgrade pip to ensure we handle binary wheels correctly
-RUN pip install --upgrade pip
-
-# 4. Install Python libraries
-# Since we are on a clean python image, this will install TensorFlow and Scikit-learn
-# freshly, ensuring they play nice together.
+# Copy requirements and install
+# (Assuming requirements.txt is in your root)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 5. Copy all source code
-COPY . /app
+# --- FIX: Copy the script from its new sub-directory ---
+# This takes the file from your local folder and puts it in /app/
+COPY detector_data_drift/monitoring_service.py .
 
-# 6. Create directories for output if they don't exist
-RUN mkdir -p /app/incoming_data
-RUN mkdir -p /app/status_output
+# Create placeholder directories for volume mounting
+RUN mkdir -p /app/incoming_data /app/status_output
 
-# 7. The command to run when the container starts
+# Set the entrypoint to run the script
+# Since we copied it directly into /app, we call it by name
 ENTRYPOINT ["python", "monitoring_service.py"]
