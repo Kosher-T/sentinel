@@ -4,24 +4,39 @@ import os
 import sys
 from pathlib import Path
 
-# Ensure root is in path for imports
-sys.path.append(os.getcwd())
+# --- DYNAMIC PATH RESOLUTION ---
+# Ensure project root is in sys.path so we can import internal packages
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
 
-import all_config as config
+# Import local project modules
+try:
+    import detector_model_decay.all_config as config
+except ImportError:
+    # Fallback for different execution contexts
+    sys.path.append(str(PROJECT_ROOT / "detector_model_decay"))
+    import all_config as config
 
 # --- ENVIRONMENT & CI DETECTION ---
-# If running in GitHub Actions or Docker, we disable interactive prompts
 IS_CI = os.getenv("GITHUB_ACTIONS") == "true" or os.getenv("DOCKER_ENV") == "true"
 
 # Allow environment variables to override config for workflow flexibility
-DRIFT_THRESHOLD = float(os.getenv("DRIFT_THRESHOLD", config.DRIFT_THRESHOLD))
+# Workflow typically passes these via 'docker run -e'
+DRIFT_THRESHOLD = float(os.getenv("DRIFT_THRESHOLD", config.DECAY_THRESHOLD))
 
-# --- DB INITIALIZATION ---
-DB_PATH = config.PROJECT_ROOT / "temp_status" / "drift_history.db"
+# --- DB & LOGGING PATHS ---
+# If in Docker, we use the volume-mapped path for persistence
+if IS_CI:
+    DB_DIR = Path("/app/status_output")
+else:
+    DB_DIR = PROJECT_ROOT / "temp_status"
+
+DB_PATH = DB_DIR / "drift_history.db"
 
 def init_db():
     """Ensures the database folder and table exist before running."""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DB_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute('''
@@ -46,6 +61,12 @@ def log_to_db(score, threshold, status):
     ''', (score, threshold, status))
     conn.commit()
     conn.close()
+    
+    # Also write a simple text file for the GitHub Workflow 'cat' command
+    with open(DB_DIR / "status.txt", "w") as f:
+        f.write(status)
+    with open(DB_DIR / "score.txt", "w") as f:
+        f.write(f"{score:.2f}")
 
 def run_drift_check():
     """
@@ -54,14 +75,11 @@ def run_drift_check():
     """
     print(f"🔍 [Sentinel] Step 1: Checking Data Drift (Threshold: {DRIFT_THRESHOLD}%)...")
     try:
-        # In a real scenario, this calls your feature-based drift detector
-        # For now, we simulate based on the existence of data in the volume
-        incoming_data = Path("/app/incoming_data") if IS_CI else config.PROJECT_ROOT / "data" / "frames"
-        
-        # Placeholder logic: if 'drifted' is in the path or environment, simulate high drift
+        # Placeholder logic: if 'SIMULATE_DRIFT' is set, we simulate a breach
         if os.getenv("SIMULATE_DRIFT") == "true":
             score = 35.5
         else:
+            # Baseline simulated score
             score = 12.5 
             
         passed = score < DRIFT_THRESHOLD
@@ -78,26 +96,30 @@ def check_retrain_trigger():
 
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
+    # Pull the last 5 runs (configurable via config)
+    count = getattr(config, 'RETRAIN_TRIGGER_COUNT', 5)
+    ratio = getattr(config, 'DRIFT_FAILURE_RATIO', 0.6)
+    
     cursor.execute('''
         SELECT status FROM drift_logs 
         ORDER BY timestamp DESC LIMIT ?
-    ''', (config.RETRAIN_TRIGGER_COUNT,))
+    ''', (count,))
     rows = cursor.fetchall()
     conn.close()
 
-    if len(rows) < config.RETRAIN_TRIGGER_COUNT:
+    if len(rows) < count:
         return False
     
     fail_count = sum(1 for row in rows if row[0] == "FAIL")
-    failure_ratio = fail_count / config.RETRAIN_TRIGGER_COUNT
+    failure_ratio = fail_count / count
     
-    return failure_ratio >= config.DRIFT_FAILURE_RATIO
+    return failure_ratio >= ratio
 
 def trigger_retraining_workflow():
     """Step 2: Model Retraining Simulator."""
     print("🏗️ [Sentinel] Step 2: System Instability Detected. Triggering Retraining...")
-    # This would trigger a separate GitHub Action or local training script
-    time.sleep(2) 
+    # In a real environment, this would call a training script or API
+    time.sleep(1) 
     print("✅ [Sentinel] Retraining complete. Challenger model generated.")
     return True
 
@@ -105,10 +127,10 @@ def run_decay_audit():
     """Step 3: Model Decay Audit (Gold Standard)."""
     print("🛡️ [Sentinel] Step 3: Auditing Challenger Model via Decay Pipeline...")
     try:
+        # Import the latest version of the analysis runner
         from detector_model_decay.decay_pipeline import run_analysis
         
-        # In CI/Headless mode, run_analysis should not ask for input.
-        # We assume config has the correct FRESH/OLD paths set for the environment.
+        # This will run the comparison between Baseline and Challenger
         run_analysis()
         return True 
     except Exception as e:
