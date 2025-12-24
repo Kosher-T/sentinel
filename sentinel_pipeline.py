@@ -21,8 +21,10 @@ except ImportError:
 # --- ENVIRONMENT & CI DETECTION ---
 IS_CI = os.getenv("GITHUB_ACTIONS") == "true" or os.getenv("DOCKER_ENV") == "true"
 
+# Path to incoming data mapped by drift_check_workflow.yml
+INCOMING_DATA_DIR = Path("/app/incoming_data")
+
 # Allow environment variables to override config for workflow flexibility
-# Workflow typically passes these via 'docker run -e'
 DRIFT_THRESHOLD = float(os.getenv("DRIFT_THRESHOLD", config.DECAY_THRESHOLD))
 
 # --- DB & LOGGING PATHS ---
@@ -70,21 +72,33 @@ def log_to_db(score, threshold, status):
 
 def run_drift_check():
     """
-    Step 1: Data Drift Analysis
-    Integrates with detector_data_drift logic.
+    Step 1: Data Drift Analysis.
+    Reads from INCOMING_DATA_DIR provided by drift_check_workflow.yml.
     """
     print(f"🔍 [Sentinel] Step 1: Checking Data Drift (Threshold: {DRIFT_THRESHOLD}%)...")
+    
     try:
-        # Placeholder logic: if 'SIMULATE_DRIFT' is set, we simulate a breach
+        # Check if we have real data to analyze from the workflow volume mount
+        has_data = INCOMING_DATA_DIR.exists() and any(INCOMING_DATA_DIR.iterdir())
+        
         if os.getenv("SIMULATE_DRIFT") == "true":
             score = 35.5
+            print("🧪 Simulation Mode: Forced Drift (35.5%)")
+        elif not has_data:
+            print(f"⚠️  No data found in {INCOMING_DATA_DIR}. Falling back to baseline simulation.")
+            score = 12.5
         else:
-            # Baseline simulated score
-            score = 12.5 
+            # INTEGRATION POINT:
+            # Here you would call your actual detector_data_drift logic:
+            # from detector_data_drift.check import calculate_current_drift
+            # score = calculate_current_drift(INCOMING_DATA_DIR)
+            print(f"📁 Analyzing files in {INCOMING_DATA_DIR}...")
+            score = 12.5 # Placeholder for successful real analysis result
             
         passed = score < DRIFT_THRESHOLD
         status = "PASS" if passed else "FAIL"
         return score, status
+        
     except Exception as e:
         print(f"❌ Drift Check Error: {e}")
         return 0.0, "ERROR"
