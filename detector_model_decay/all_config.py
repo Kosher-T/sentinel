@@ -19,8 +19,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BASE_DATA_DIR = PROJECT_ROOT / "data" / "golden_set_septuplets"
 
 # --- MODEL PATHS ---
-OLD_MODEL_PATH = BASE_DATA_DIR / "models" / "old_model" / "vfi_septuplet_epoch_31.keras"
-FRESH_MODEL_PATH = BASE_DATA_DIR / "models" / "fresh_model" / "vfi_septuplet_epoch_35.keras"
+OLD_MODEL_PATH = BASE_DATA_DIR / "models" / "old_model"
+FRESH_MODEL_PATH = BASE_DATA_DIR / "models" / "fresh_model"
 
 # --- OUTPUT PATHS ---
 MODEL_DECAY_ROOT = PROJECT_ROOT / "data" / "model_decay"
@@ -28,6 +28,6 @@ OLD_RESULTS_DIR = MODEL_DECAY_ROOT / "old_model_results"
 FRESH_RESULTS_DIR = MODEL_DECAY_ROOT / "fresh_model_results"
 EMBEDDINGS_ROOT = MODEL_DECAY_ROOT / "embeddings"
 
-# --- SETTINGS ---
-# Environment settings can go here too if needed later
+# --- SETTINGS & THRESHOLDS ---
 CUDA_VISIBLE_DEVICES = "-1" # Force CPU for local dev
+DECAY_THRESHOLD = 5.0      # Score above this flags a 'Degraded' status

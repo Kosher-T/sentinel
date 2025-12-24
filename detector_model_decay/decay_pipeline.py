@@ -3,9 +3,6 @@
 # Extracts and saves feature embeddings for both models to be used for decay analysis.
 # Performs Wasserstein Distance analysis to quantify model decay.
 
-# Logs environment details.
-# Interactive pipeline for VFI model inference (Old vs Fresh).
-# Extracts features and performs Wasserstein Decay Analysis.
 
 import os
 import numpy as np
@@ -21,6 +18,7 @@ import feature_extractor as extractor
 from drift_analyzer import calculate_decay_score, calculate_visual_metrics
 import all_config as config
 
+# --- OPTIMIZED CPU CONFIGURATION ---
 os.environ["CUDA_VISIBLE_DEVICES"] = config.CUDA_VISIBLE_DEVICES
 keras.mixed_precision.set_global_policy('float32')
 
@@ -49,7 +47,7 @@ class ModelMetadataManager:
 
     def get_file_metadata(self, file_path):
         """Returns a unique signature for the file: name + size + mtime."""
-        if not file_path.exists():
+        if not file_path or not file_path.exists():
             return None
         stats = file_path.stat()
         return {
@@ -68,7 +66,7 @@ class ModelMetadataManager:
         if last_meta != current_meta:
             print(f"🔄 Model Change Detected for {model_role}!")
             print(f"   Old: {last_meta.get('filename') if last_meta else 'None'}")
-            print(f"   New: {current_meta['filename']}")
+            print(f"   New: {current_meta['filename'] if current_meta else 'None'}")
             return True
         return False
 
@@ -90,12 +88,16 @@ def log_environment():
     print("=" * 45 + "\n")
 
 def select_model_file(directory, label="Model"):
+    """
+    Scans a directory for model files and prompts user selection if multiple exist.
+    """
     if not directory.exists():
         print(f"❌ Directory not found: {directory}")
         return None
 
     valid_exts = {'.keras', '.h5', '.hdf5'}
-    model_files = sorted([f for f in directory.iterdir() if f.suffix in valid_exts or f.is_dir() and (f / "saved_model.pb").exists()])
+    # Find files with valid extensions or directories that look like SavedModels
+    model_files = sorted([f for f in directory.iterdir() if f.suffix in valid_exts or (f.is_dir() and (f / "saved_model.pb").exists())])
 
     if not model_files:
         print(f"⚠️ No model files found in {directory}")
@@ -156,7 +158,6 @@ def run_vfi_inference(vfi_model, output_base_dir, model_name="model", force=Fals
     
     for seq_dir in sequence_dirs:
         out_path = output_base_dir / seq_dir.name
-        # If not forcing, skip if file already exists
         if not force and (out_path / "im7_pred.webp").exists():
             continue
 
@@ -176,7 +177,7 @@ def run_vfi_inference(vfi_model, output_base_dir, model_name="model", force=Fals
             print(f"   > Processed {processed} sequences...")
 
     print(f"✅ {model_name} processing complete.")
-    return True # Return true even if processed is 0 (if files existed and weren't forced)
+    return True
 
 def extract_embeddings(results_dir, model_id, force=False):
     print(f"\n🚀 Feature Extraction: {model_id}")
@@ -188,7 +189,6 @@ def extract_embeddings(results_dir, model_id, force=False):
     for tag in ["im4", "im7"]:
         save_file = target_dir / f"{tag}_embeddings.npy"
         if not force and save_file.exists():
-            print(f"   ℹ️  {tag} up to date.")
             continue
             
         paths = [str(p / f"{tag}_pred.webp") for p in sorted(results_dir.iterdir()) if p.is_dir()]
@@ -203,6 +203,11 @@ def run_analysis():
     print("\n" + "=" * 45)
     print("⚖️  DECAY ANALYSIS REPORT")
     print("=" * 45)
+
+    print(f"\nOld Model: {meta_mgr.history.get('old_model', {}).get('filename', 'N/A')}")
+    print(f"Fresh Model: {meta_mgr.history.get('fresh_model', {}).get('filename', 'N/A')}\n")
+    
+    threshold = getattr(config, 'DECAY_THRESHOLD', 15.0)
     
     report = {}
     for task in ["im4", "im7"]:
@@ -224,12 +229,14 @@ def run_analysis():
             
             f_emb = np.load(f_path)
             o_emb = np.load(o_path)
-            report[task] = calculate_decay_score(f_emb, o_emb, avg_p, avg_s, task=task)
+            score = calculate_decay_score(f_emb, o_emb, avg_p, avg_s, task=task)
             
+            status = "🔴 DEGRADED" if score > threshold else "🟢 STABLE"
             label = "Interpolation" if task == "im4" else "Prediction"
+            
             print(f"\n[{label}]")
             print(f"   Visual Quality: {avg_p:.2f}dB / {avg_s:.4f} SSIM")
-            print(f"   Decay Score   : {report[task]}%")
+            print(f"   Decay Score   : {score}% | {status}")
 
     print("\n" + "=" * 45)
 
@@ -238,8 +245,9 @@ if __name__ == "__main__":
     
     meta_mgr = ModelMetadataManager(HISTORY_FILE)
     
-    fresh_path = select_model_file(config.FRESH_MODEL_PATH.parent, "Fresh Model")
-    old_path = select_model_file(config.OLD_MODEL_PATH.parent, "Old Model")
+    # Use select_model_file on the directory paths defined in config
+    fresh_path = select_model_file(config.FRESH_MODEL_PATH, "Fresh Model")
+    old_path = select_model_file(config.OLD_MODEL_PATH, "Old Model")
     
     if not fresh_path or not old_path:
         print("❌ Model selection failed. Exiting.")
@@ -264,23 +272,19 @@ if __name__ == "__main__":
         print("⚡ New model detected for 'Old Model' role. Auto-triggering inference.")
         should_run_old = True
     else:
-        # Only ask if the model IS THE SAME as last time
-        user_choice = input("🔄 Old Model matches history. Re-run inference anyway? (y/n) [n]: ").lower()
+        user_choice = input("🔄 Old Model matches history. Re-run anyway? (y/n) [n]: ").lower()
         if user_choice == 'y':
             should_run_old = True
 
     if should_run_old:
         old_m = load_vfi_model(old_path)
         if old_m:
-            # If we are here because of a change, we MUST force. 
-            # If we are here because of user choice, we also force.
             run_vfi_inference(old_m, config.OLD_RESULTS_DIR, "Old Model", force=True)
             meta_mgr.update_entry("old_model", old_path)
             extract_embeddings(config.OLD_RESULTS_DIR, "old_model", force=True)
             del old_m
             keras.backend.clear_session()
     else:
-        # If skipping inference, we still ensure embeddings exist for the current old model results
         extract_embeddings(config.OLD_RESULTS_DIR, "old_model", force=False)
 
     run_analysis()
