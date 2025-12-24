@@ -23,21 +23,52 @@ os.environ["CUDA_VISIBLE_DEVICES"] = config.CUDA_VISIBLE_DEVICES
 keras.mixed_precision.set_global_policy('float32')
 
 def log_environment():
-    print("\n" + "=" * 40)
+    print("\n" + "=" * 45)
     print("🖥️  ENVIRONMENT DIAGNOSTICS")
-    print("-" * 40)
+    print("-" * 45)
     print(f"OS: {platform.system()} {platform.release()}")
     print(f"Processor: {platform.processor()}")
     print(f"Physical Cores: {psutil.cpu_count(logical=False)}")
     print(f"Keras Backend: {keras.backend.backend()}")
     print(f"OpenCV Version: {cv2.__version__}")
-    print("=" * 40 + "\n")
+    print("=" * 45 + "\n")
+
+def select_model_file(directory, label="Model"):
+    """
+    Scans a directory for model files and prompts user selection if multiple exist.
+    """
+    if not directory.exists():
+        print(f"❌ Directory not found: {directory}")
+        return None
+
+    # Common Keras/TF model extensions
+    valid_exts = {'.keras', '.h5', '.hdf5'}
+    model_files = sorted([f for f in directory.iterdir() if f.suffix in valid_exts or f.is_dir() and (f / "saved_model.pb").exists()])
+
+    if not model_files:
+        print(f"⚠️ No model files found in {directory}")
+        return None
+
+    if len(model_files) == 1:
+        return model_files[0]
+
+    print(f"\n📂 Multiple files found for {label}:")
+    for idx, f in enumerate(model_files):
+        print(f"  [{idx}] {f.name}")
+    
+    while True:
+        try:
+            choice = int(input(f"👉 Select {label} index: "))
+            if 0 <= choice < len(model_files):
+                return model_files[choice]
+        except ValueError:
+            pass
+        print("❌ Invalid selection. Try again.")
 
 def load_vfi_model(model_path):
-    print(f"\n🧠 Loading Model: {model_path.name}...")
+    print(f"🧠 Loading: {model_path.name}...")
     try:
-        model = keras.models.load_model(model_path, compile=False)
-        return model
+        return keras.models.load_model(model_path, compile=False)
     except Exception as e:
         print(f"❌ Failed to load model: {e}")
         return None
@@ -61,156 +92,126 @@ def prepare_input_sequence(seq_path):
     return np.expand_dims(input_data, axis=0), original_dims
 
 def run_vfi_inference(vfi_model, output_base_dir, model_name="model", force=False):
-    print(f"\n🎬 Inference Start: {model_name}")
+    print(f"\n🎬 Inference: {model_name}")
     print("-" * 30)
     raw_data_path = config.BASE_DATA_DIR / "sequences" 
     if not raw_data_path.exists():
-        print(f"❌ Sequence data missing at {raw_data_path}")
+        print(f"❌ Missing sequences at {raw_data_path}")
         return False
 
     sequence_dirs = sorted([d for d in raw_data_path.iterdir() if d.is_dir()])
-    processed_count = 0
-    skipped_count = 0
+    processed = 0
     
     for seq_dir in sequence_dirs:
-        seq_id = seq_dir.name
-        output_seq_path = output_base_dir / seq_id
-        output_seq_path.mkdir(parents=True, exist_ok=True)
-        
-        if not force and (output_seq_path / "im7_pred.webp").exists():
-            skipped_count += 1
+        out_path = output_base_dir / seq_dir.name
+        if not force and (out_path / "im7_pred.webp").exists():
             continue
 
+        out_path.mkdir(parents=True, exist_ok=True)
         input_tensor, original_dims = prepare_input_sequence(seq_dir)
         if input_tensor is None: continue
 
         preds = vfi_model.predict(input_tensor, verbose=0)
-        im7_final = cv2.resize((preds[0][0] * 255).astype(np.uint8), original_dims, interpolation=cv2.INTER_CUBIC)
-        im4_final = cv2.resize((preds[1][0] * 255).astype(np.uint8), original_dims, interpolation=cv2.INTER_CUBIC)
+        # im7 and im4 are indices 0 and 1 from our model's multi-output
+        im7_f = cv2.resize((preds[0][0] * 255).astype(np.uint8), original_dims, interpolation=cv2.INTER_CUBIC)
+        im4_f = cv2.resize((preds[1][0] * 255).astype(np.uint8), original_dims, interpolation=cv2.INTER_CUBIC)
 
-        cv2.imwrite(str(output_seq_path / "im4_pred.webp"), cv2.cvtColor(im4_final, cv2.COLOR_RGB2BGR))
-        cv2.imwrite(str(output_seq_path / "im7_pred.webp"), cv2.cvtColor(im7_final, cv2.COLOR_RGB2BGR))
-        processed_count += 1
-        if processed_count % 10 == 0:
-            print(f"   > Processed {processed_count} sequences...")
+        cv2.imwrite(str(out_path / "im4_pred.webp"), cv2.cvtColor(im4_f, cv2.COLOR_RGB2BGR))
+        cv2.imwrite(str(out_path / "im7_pred.webp"), cv2.cvtColor(im7_f, cv2.COLOR_RGB2BGR))
+        
+        processed += 1
+        if processed % 10 == 0:
+            print(f"   > Processed {processed} sequences...")
 
-    print("-" * 30)
-    if processed_count > 0:
-        print(f"✅ Completed inference for {model_name} ({processed_count} sequences processed).")
-        return True
-    return False
+    print(f"✅ {model_name} processing complete.")
+    return processed > 0
 
-def extract_and_save_embeddings(results_dir, model_id, force=False):
+def extract_embeddings(results_dir, model_id, force=False):
     print(f"\n🚀 Feature Extraction: {model_id}")
-    print("-" * 30)
-    feature_model = extractor.create_embedding_model()
-    target_emb_dir = config.EMBEDDINGS_ROOT / model_id
-    target_emb_dir.mkdir(parents=True, exist_ok=True)
+    target_dir = config.EMBEDDINGS_ROOT / model_id
+    target_dir.mkdir(parents=True, exist_ok=True)
     
-    im4_paths, im7_paths = [], []
-    for seq_folder in sorted(results_dir.iterdir()):
-        if seq_folder.is_dir():
-            p4, p7 = seq_folder / "im4_pred.webp", seq_folder / "im7_pred.webp"
-            if p4.exists(): im4_paths.append(str(p4))
-            if p7.exists(): im7_paths.append(str(p7))
-
-    tasks_run = 0
-    for tag, paths in [("im4", im4_paths), ("im7", im7_paths)]:
+    feature_model = extractor.create_embedding_model()
+    
+    for tag in ["im4", "im7"]:
+        save_file = target_dir / f"{tag}_embeddings.npy"
+        if not force and save_file.exists():
+            print(f"   ℹ️  {tag} up to date.")
+            continue
+            
+        paths = [str(p / f"{tag}_pred.webp") for p in sorted(results_dir.iterdir()) if p.is_dir()]
+        paths = [p for p in paths if os.path.exists(p)]
+        
         if paths:
-            save_file = target_emb_dir / f"{tag}_embeddings.npy"
-            if not force and save_file.exists():
-                print(f"   ℹ️  {model_id} {tag} embeddings exist. Skipping.")
-                continue
-            print(f"   > Extracting {tag} features ({len(paths)} frames)...")
+            print(f"   > Extracting {tag}...")
             emb = extractor.extract_features(feature_model, paths)
             np.save(save_file, emb)
-            tasks_run += 1
-    if tasks_run == 0:
-        print(f"✅ All embeddings for {model_id} are up to date.")
+            print(f"\n   ✅ Saved embeddings to {save_file.name}")
 
-def run_decay_analysis():
-    print("\n" + "=" * 40)
-    print("⚖️  STARTING MULTI-METRIC DECAY ANALYSIS")
-    print("=" * 40)
+def run_analysis():
+    print("\n" + "=" * 45)
+    print("⚖️  DECAY ANALYSIS REPORT")
+    print("=" * 45)
     
-    tasks = ["im4", "im7"]
-    final_report = {}
-
-    for task in tasks:
-        fresh_emb = config.EMBEDDINGS_ROOT / "fresh_model" / f"{task}_embeddings.npy"
-        old_emb = config.EMBEDDINGS_ROOT / "old_model" / f"{task}_embeddings.npy"
+    report = {}
+    for task in ["im4", "im7"]:
+        f_path = config.EMBEDDINGS_ROOT / "fresh_model" / f"{task}_embeddings.npy"
+        o_path = config.EMBEDDINGS_ROOT / "old_model" / f"{task}_embeddings.npy"
         
-        if not (fresh_emb.exists() and old_emb.exists()):
-            continue
-
-        print(f"\n📊 Calculating Visual Perceptual Metrics for {task}...")
-        psnrs, ssims = [], []
-        
-        # Iterate through actual results to get pixel-level comparison
-        seq_folders = sorted([d for d in config.FRESH_RESULTS_DIR.iterdir() if d.is_dir()])
-        for seq_dir in seq_folders:
-            fresh_img = seq_dir / f"{task}_pred.webp"
-            old_img = config.OLD_RESULTS_DIR / seq_dir.name / f"{task}_pred.webp"
+        if f_path.exists() and o_path.exists():
+            psnrs, ssims = [], []
+            seqs = sorted([d for d in config.FRESH_RESULTS_DIR.iterdir() if d.is_dir()])
+            for s in seqs:
+                img_f = s / f"{task}_pred.webp"
+                img_o = config.OLD_RESULTS_DIR / s.name / f"{task}_pred.webp"
+                if img_f.exists() and img_o.exists():
+                    p, sm = calculate_visual_metrics(img_f, img_o)
+                    psnrs.append(p); ssims.append(sm)
             
-            if fresh_img.exists() and old_img.exists():
-                p, s = calculate_visual_metrics(fresh_img, old_img)
-                if p is not None:
-                    psnrs.append(p)
-                    ssims.append(s)
-
-        avg_psnr = np.mean(psnrs) if psnrs else None
-        avg_ssim = np.mean(ssims) if ssims else None
-        
-        print(f"   > Mean PSNR: {avg_psnr:.2f} dB")
-        print(f"   > Mean SSIM: {avg_ssim:.4f}")
-
-        # Combine with Statistical (Wasserstein) Drift
-        f_emb_data = np.load(fresh_emb)
-        o_emb_data = np.load(old_emb)
-        final_report[task] = calculate_decay_score(f_emb_data, o_emb_data, avg_psnr, avg_ssim)
-
-    if final_report:
-        print("\n" + "="*40)
-        print("📊 AGGREGATE MODEL DECAY REPORT")
-        print("="*40)
-        for task, score in final_report.items():
-            # Threshold set to 15% based on loss log proportions
-            status = "🔴 DEGRADED" if score > 15 else "🟢 STABLE"
+            avg_p = np.mean(psnrs) if psnrs else 0
+            avg_s = np.mean(ssims) if ssims else 0
+            
+            f_emb = np.load(f_path)
+            o_emb = np.load(o_path)
+            report[task] = calculate_decay_score(f_emb, o_emb, avg_p, avg_s, task=task)
+            
             label = "Interpolation" if task == "im4" else "Prediction"
-            print(f"{label:<15}: {score:>6}% Decay | {status}")
-        print("="*40 + "\n")
+            print(f"\n[{label}]")
+            print(f"   Visual Quality: {avg_p:.2f}dB / {avg_s:.4f} SSIM")
+            print(f"   Decay Score   : {report[task]}%")
+
+    print("\n" + "=" * 45)
 
 if __name__ == "__main__":
     log_environment()
     
-    # Process Fresh
-    fresh_inf = False
-    try:
-        config.FRESH_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        fresh_model = load_vfi_model(config.FRESH_MODEL_PATH)
-        if fresh_model:
-            fresh_inf = run_vfi_inference(fresh_model, config.FRESH_RESULTS_DIR, "Fresh Model")
-            del fresh_model
+    # Selection logic for modularity
+    fresh_path = select_model_file(config.FRESH_MODEL_PATH.parent, "Fresh Model")
+    old_path = select_model_file(config.OLD_MODEL_PATH.parent, "Old Model")
+    
+    if not fresh_path or not old_path:
+        print("❌ Model selection failed. Exiting.")
+        sys.exit(1)
+
+    # 1. Fresh Model
+    fresh_m = load_vfi_model(fresh_path)
+    if fresh_m:
+        fresh_ran = run_vfi_inference(fresh_m, config.FRESH_RESULTS_DIR, "Fresh Model")
+        extract_embeddings(config.FRESH_RESULTS_DIR, "fresh_model", force=fresh_ran)
+        del fresh_m
+        keras.backend.clear_session()
+
+    # 2. Old Model
+    print("\n" + "-"*30)
+    if input("🔄 Run Old Model inference? (y/n) [y]: ").lower() != 'n':
+        old_m = load_vfi_model(old_path)
+        if old_m:
+            # We force inference for the old model if user says yes to ensure fresh comparisons
+            old_ran = run_vfi_inference(old_m, config.OLD_RESULTS_DIR, "Old Model", force=True)
+            extract_embeddings(config.OLD_RESULTS_DIR, "old_model", force=old_ran)
+            del old_m
             keras.backend.clear_session()
-    except Exception as e: print(f"⚠️ Fresh error: {e}")
-    extract_and_save_embeddings(config.FRESH_RESULTS_DIR, "fresh_model", force=fresh_inf)
-
-    # Process Old
-    print("\n" + "-"*40)
-    user_choice = input("🔄 Run inference for Old Model? (y/n) [default: y]: ").strip().lower()
-    if user_choice != 'n':
-        old_inf = False
-        try:
-            config.OLD_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-            old_model = load_vfi_model(config.OLD_MODEL_PATH)
-            if old_model:
-                # Force=True to ensure we regenerate frames for pixel-level PSNR/SSIM
-                old_inf = run_vfi_inference(old_model, config.OLD_RESULTS_DIR, "Old Model", force=True)
-                extract_and_save_embeddings(config.OLD_RESULTS_DIR, "old_model", force=old_inf)
-                del old_model
-                keras.backend.clear_session()
-        except Exception as e: print(f"❌ Old error: {e}")
     else:
-        extract_and_save_embeddings(config.OLD_RESULTS_DIR, "old_model", force=False)
+        extract_embeddings(config.OLD_RESULTS_DIR, "old_model", force=False)
 
-    run_decay_analysis()
+    run_analysis()
