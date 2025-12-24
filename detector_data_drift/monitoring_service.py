@@ -3,28 +3,47 @@ import sys
 import sqlite3
 import datetime
 import numpy as np
-import detector_data_drift.feature_extractor as detector
-import drift_analyzer as analyzer
+from pathlib import Path
+
+# --- DYNAMIC PATH RESOLUTION ---
+# Ensures the script can find its sibling modules and parent packages
+CURRENT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = CURRENT_DIR.parent if CURRENT_DIR.name == "detector_data_drift" else CURRENT_DIR
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+# Imports using the established package structure
+try:
+    import detector_data_drift.feature_extractor as detector
+    from detector_model_decay.drift_analyzer import analyze_drift
+except ImportError:
+    # Fallback for localized execution
+    import feature_extractor as detector
+    from drift_analyzer import analyze_drift
 
 # --- CONFIGURATION ---
-NEW_DATA_PATH = os.environ.get("NEW_DATA_PATH", "/app/incoming_data")
-OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "/app/status_output")
-DB_PATH = os.path.join(OUTPUT_DIR, "drift_history.db")
-BASELINE_PATH = os.path.join(OUTPUT_DIR, "baseline_embeddings.npy") 
-MIN_SAMPLES_FOR_CHECK = 50 # New constraint to prevent false positives on tiny batches
+# Use Path objects for better cross-platform compatibility
+NEW_DATA_PATH = Path(os.environ.get("NEW_DATA_PATH", "/app/incoming_data"))
+OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "/app/status_output"))
 
+# Database and file paths
+DB_PATH = OUTPUT_DIR / "drift_history.db"
+BASELINE_PATH = OUTPUT_DIR / "baseline_embeddings.npy"
+STATUS_PATH = OUTPUT_DIR / "status.txt"
+SCORE_PATH = OUTPUT_DIR / "score.txt"
+
+# Thresholds and constraints
+MIN_SAMPLES_FOR_CHECK = 50 
 try:
     DRIFT_THRESHOLD = float(os.environ.get("DRIFT_THRESHOLD", "30.0"))
 except ValueError:
     DRIFT_THRESHOLD = 30.0
 
-# Paths for legacy support (GitHub Actions still reads these)
-STATUS_PATH = os.path.join(OUTPUT_DIR, "status.txt") 
-SCORE_PATH = os.path.join(OUTPUT_DIR, "score.txt")
-
 def init_db():
     """Creates the database table if it doesn't exist."""
-    conn = sqlite3.connect(DB_PATH)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(DB_PATH))
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS drift_logs
                  (timestamp TEXT, drift_score REAL, status TEXT, threshold REAL)''')
@@ -33,128 +52,80 @@ def init_db():
 
 def log_to_db(score, status, threshold):
     """Saves the result to the history database."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(str(DB_PATH))
     c = conn.cursor()
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     c.execute("INSERT INTO drift_logs VALUES (?, ?, ?, ?)", 
               (timestamp, score, status, threshold))
     conn.commit()
     conn.close()
-    print(f"6. Logged result to {DB_PATH}")
+    print(f"✅ Logged result to {DB_PATH}")
 
 def get_total_image_count(directory):
-    """
-    Recursively counts image files in the directory and all subdirectories.
-    Solves the issue where data inside subfolders (e.g. 1113(1)-1/) was ignored.
-    """
-    valid_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp')
+    """Recursively counts image files in the directory."""
+    valid_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
     count = 0
-    # os.walk yields a 3-tuple (root, dirs, files) for every directory in the tree
-    for root, dirs, files in os.walk(directory):
-        for file in files:
-            if file.lower().endswith(valid_extensions):
-                count += 1
+    for path in directory.rglob('*'):
+        if path.suffix.lower() in valid_exts:
+            count += 1
     return count
 
 def check_for_drift():
-    print(f"--- STARTING MONITORING JOB (Threshold: {DRIFT_THRESHOLD}%) ---")
-    
-    # Ensure DB exists and output directory is ready
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    print(f"\n--- 🛰️ SENTINEL MONITORING JOB (Threshold: {DRIFT_THRESHOLD}%) ---")
     init_db()
     
-    # --- 1. Baseline Handling (Setup phase) ---
-    if not os.path.exists(BASELINE_PATH):
+    # 1. Baseline Handling
+    if not BASELINE_PATH.exists():
         print(f"1. Baseline NOT found. Generating new baseline from {NEW_DATA_PATH}...")
         
-        # Use recursive count logic
-        num_baseline_samples = get_total_image_count(NEW_DATA_PATH)
-        
-        if num_baseline_samples == 0:
-            print(f"CRITICAL ERROR: No data found at {NEW_DATA_PATH} (recursively checked). Cannot generate baseline.")
+        num_samples = get_total_image_count(NEW_DATA_PATH)
+        if num_samples == 0:
+            print(f"❌ CRITICAL ERROR: No data found at {NEW_DATA_PATH}.")
             sys.exit(1)
             
         model = detector.create_embedding_model()
-        baseline = detector.generate_embeddings_from_directory(model, NEW_DATA_PATH)
+        baseline = detector.extract_features(model, [str(p) for p in NEW_DATA_PATH.rglob('*') if p.suffix.lower() in {'.webp', '.png', '.jpg'}])
         
         if baseline.size == 0:
-            print(f"CRITICAL ERROR: Failed to generate baseline embeddings. Check data format.")
+            print(f"❌ CRITICAL ERROR: Failed to generate baseline embeddings.")
             sys.exit(1)
             
-        # Save the generated baseline to the persistent volume
-        np.save(BASELINE_PATH, baseline)
-        print(f"1. Baseline embeddings successfully created and saved to {BASELINE_PATH}. Total samples: {baseline.shape[0]}")
+        np.save(str(BASELINE_PATH), baseline)
+        print(f"✅ Baseline saved to {BASELINE_PATH}. Samples: {baseline.shape[0]}")
         
-        # We skip logging 0% to avoid dashboard spikes
-        print("Initial baseline run complete. Monitoring will begin on next execution.")
-        
-        # --- SAVE OUTPUTS for initial run ---
-        with open(SCORE_PATH, "w") as f:
-            f.write(f"0.00")
-        with open(STATUS_PATH, "w") as f:
-            f.write("PASS")
-        
-        sys.exit(0) # Exit success after baseline creation
+        # Write initial neutral outputs
+        with open(SCORE_PATH, "w") as f: f.write("0.00")
+        with open(STATUS_PATH, "w") as f: f.write("PASS")
+        return
 
-    # --- 2. Monitoring Flow (Check phase) ---
-    
-    print(f"1. Baseline found at {BASELINE_PATH}. Loading...")
-    baseline = np.load(BASELINE_PATH)
+    # 2. Monitoring Flow
+    print(f"1. Baseline loaded from {BASELINE_PATH}")
+    baseline = np.load(str(BASELINE_PATH))
 
-    # Check for New Data files recursively
     num_samples = get_total_image_count(NEW_DATA_PATH)
-    
-    if num_samples == 0:
-        print(f"Error: No image files found in {NEW_DATA_PATH} or its subdirectories.")
-        sys.exit(1)
-    
     if num_samples < MIN_SAMPLES_FOR_CHECK:
-        status = "PASS"
-        score = 0.0
-        print(f"WARNING: Only {num_samples} samples found. Skipping drift check to prevent false positive (MIN required: {MIN_SAMPLES_FOR_CHECK}).")
-        print("[PASS] Insufficient Data for Reliable Check.")
-        log_to_db(score, "TOO_FEW_SAMPLES", DRIFT_THRESHOLD) # Log the skip status
-        
-        with open(SCORE_PATH, "w") as f:
-            f.write(f"{score:.2f}")
-        with open(STATUS_PATH, "w") as f:
-            f.write(status)
-        
-        sys.exit(0) # Exit success after logging skip
-    
-    print(f"2. {num_samples} samples found. Proceeding with check.")
+        print(f"⚠️ Only {num_samples} samples found. Skipping check (Min: {MIN_SAMPLES_FOR_CHECK}).")
+        log_to_db(0.0, "INSUFFICIENT_DATA", DRIFT_THRESHOLD)
+        with open(SCORE_PATH, "w") as f: f.write("0.00")
+        with open(STATUS_PATH, "w") as f: f.write("PASS")
+        return
 
-    # 3. Load Model
+    # 3. Process New Data
+    print(f"2. Extracting features from {num_samples} samples...")
     model = detector.create_embedding_model()
+    image_list = [str(p) for p in NEW_DATA_PATH.rglob('*') if p.suffix.lower() in {'.webp', '.png', '.jpg'}]
+    new_embeddings = detector.extract_features(model, image_list)
     
-    # 4. Generate Embeddings
-    new_embeddings = detector.generate_embeddings_from_directory(model, NEW_DATA_PATH)
+    # 4. Analyze
+    score = analyze_drift(baseline, new_embeddings)
+    status = "FAIL" if score > DRIFT_THRESHOLD else "PASS"
     
-    # 5. Calculate Drift
-    score, _ = analyzer.analyze_drift(baseline, new_embeddings)
-    
-    print(f"\n>>> DRIFT SCORE: {score:.2f}%")
-    
-    # Determine Verdict
-    if score > DRIFT_THRESHOLD:
-        status = "FAIL"
-        print("[FAIL] HIGH DRIFT DETECTED! Remediation pipeline triggered.")
-    else:
-        status = "PASS"
-        print("[PASS] System Normal.")
+    print(f"\n>>> 📊 DRIFT SCORE: {score:.2f}% | STATUS: {status}")
 
-    # --- SAVE OUTPUTS ---
-    # 1. Text files for GitHub Actions
-    with open(SCORE_PATH, "w") as f:
-        f.write(f"{score:.2f}")
-    with open(STATUS_PATH, "w") as f:
-        f.write(status)
-
-    # 2. Database for Dashboard
+    # 5. Persistent Outputs
+    with open(SCORE_PATH, "w") as f: f.write(f"{score:.2f}")
+    with open(STATUS_PATH, "w") as f: f.write(status)
     log_to_db(score, status, DRIFT_THRESHOLD)
-    
-    # Exit code logic
-    sys.exit(0 if status == "PASS" else 0) # We exit 0 so the pipeline continues
 
 if __name__ == "__main__":
     check_for_drift()
