@@ -9,7 +9,8 @@ import cv2
 from skimage.metrics import structural_similarity as ssim
 
 # --- CONFIGURATION ---
-SENSITIVITY_FACTOR = 1.2 # Slightly lowered to reduce "volatility" 
+# Lowered significantly. We want the score to be very low if the models are nearly identical.
+SENSITIVITY_FACTOR = 0.5 
 
 def analyze_drift(baseline, drifted):
     """Calculates Wasserstein Distance (Statistical Drift)."""
@@ -30,7 +31,9 @@ def analyze_drift(baseline, drifted):
         total_distance += wasserstein_distance(baseline_pca[:, i], drifted_pca[:, i])
 
     avg_dist = total_distance / baseline_pca.shape[1]
-    # Apply sensitivity
+    
+    # Score = (1 - e^(-0.5 * dist)) * 100. 
+    # This makes small distances result in very small scores.
     drift_score = (1 - np.exp(-SENSITIVITY_FACTOR * avg_dist)) * 100
     return drift_score
 
@@ -49,7 +52,7 @@ def calculate_visual_metrics(img1_path, img2_path):
 def calculate_decay_score(f_emb, o_emb, avg_psnr=None, avg_ssim=None, task="im4"):
     """
     Aggregates statistical drift and visual metrics.
-    Adjusts thresholds based on task difficulty (im4 vs im7).
+    Calibrated for VFI models with <2% loss variance.
     """
     # 1. Statistical Score
     stat_score = analyze_drift(f_emb, o_emb)
@@ -57,25 +60,25 @@ def calculate_decay_score(f_emb, o_emb, avg_psnr=None, avg_ssim=None, task="im4"
     if avg_psnr is None or avg_ssim is None:
         return round(stat_score, 2)
 
-    # 2. Task-Specific Normalization (Calibration)
-    # Prediction (im7) naturally has lower PSNR. 
-    # We set 'Excellent' benchmarks based on your training logs.
+    # 2. Relaxed Benchmarks
+    # Based on training logs, im7 at 37dB is "Great", not "Decaying".
     if task == "im7":
-        psnr_benchmark = 35.0  # im7 is okay at 35dB
-        ssim_benchmark = 0.95
+        psnr_benchmark = 36.0 
+        ssim_benchmark = 0.96
     else:
-        psnr_benchmark = 40.0  # im4 should be 40dB+
+        psnr_benchmark = 41.0 
         ssim_benchmark = 0.98
 
     # Calculate individual decay components
-    # If psnr > benchmark, decay is 0.
-    psnr_decay = max(0, min(100, (psnr_benchmark - avg_psnr) * 4))
-    ssim_decay = max(0, min(100, (ssim_benchmark - avg_ssim) * 200))
+    # We reduce the multiplier (was 4 and 200) to be less aggressive.
+    psnr_decay = max(0, min(100, (psnr_benchmark - avg_psnr) * 2))
+    ssim_decay = max(0, min(100, (ssim_benchmark - avg_ssim) * 50))
     
-    # 3. Aggregate (Heavily weighted toward Statistics but balanced by task reality)
-    # We reduce the weight of Stat Score for Prediction to prevent "Ghosting" artifacts from inflating decay.
-    stat_weight = 0.4 if task == "im7" else 0.6
-    visual_weight = (1.0 - stat_weight) / 2
+    # 3. Aggregate
+    # For nearly identical models, we trust the Visual Metrics (PSNR/SSIM) more 
+    # because Wasserstein is too "jumpy" for fine-tuned weight shifts.
+    stat_weight = 0.3 
+    visual_weight = 0.35 # (35% PSNR, 35% SSIM)
     
     aggregate = (stat_score * stat_weight) + (psnr_decay * visual_weight) + (ssim_decay * visual_weight)
     
