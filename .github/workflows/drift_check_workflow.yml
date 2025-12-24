@@ -4,6 +4,11 @@ on:
 #  push:
 #    branches: [ "main" ]
   workflow_dispatch:
+    inputs:
+      drift_threshold:
+        description: 'Drift Threshold %'
+        required: false
+        default: '25.0'
 
 jobs:
   run_sentinel_cloud:
@@ -13,43 +18,59 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 1. We build the Docker image right here on GitHub's servers
-      # This uses THEIR bandwidth, not mine.
+      # Ensure folders exist before Docker tries to mount them
+      # This prevents "directory not found" or Docker creating them as root-owned
+      - name: Initialize Environment
+        run: |
+          mkdir -p temp_status
+          mkdir -p data/frames
+          mkdir -p data/drifted_frames
+
       - name: Build Sentinel Docker Image
         run: docker build -t vfi_monitor .
 
-      # 2. Run the Monitor (Establish Baseline)
-      # We map the repository's 'data/frames' folder to the container
-      - name: Run 1 - Check Baseline Drift (frames/ drift)
+      # Run 1: The Baseline check
+      # We use the threshold from the manual input if available, else default to 25.0
+      - name: Run 1 - Check Baseline Drift
         run: |
           docker run \
-            -e DRIFT_THRESHOLD=30.0 \
+            -e DRIFT_THRESHOLD=${{ github.event.inputs.drift_threshold || '25.0' }} \
+            -e GITHUB_ACTIONS=true \
             -v ${{ github.workspace }}/data/frames:/app/incoming_data \
             -v ${{ github.workspace }}/temp_status:/app/status_output \
             vfi_monitor
 
-      # 3. Run the Monitor (Check Bad Data)
-      # This effectively tests the "Drifted" folder
-      - name: Run 2 - Check Drifted Data (drifted_frames)
-        continue-on-error: true # We expect this to fail (detect drift), so don't stop the workflow
+      # Run 2: Test against known "drifted" data
+      # continue-on-error is true because we EXPECT a failure here (to test the system)
+      - name: Run 2 - Check Drifted Data (Simulation)
+        continue-on-error: true
         run: |
           docker run \
-            -e DRIFT_THRESHOLD=30.0 \
+            -e DRIFT_THRESHOLD=${{ github.event.inputs.drift_threshold || '25.0' }} \
+            -e SIMULATE_DRIFT=true \
+            -e GITHUB_ACTIONS=true \
             -v ${{ github.workspace }}/data/drifted_frames:/app/incoming_data \
             -v ${{ github.workspace }}/temp_status:/app/status_output \
             vfi_monitor
 
-      # 4. Display Results in the Log
-      - name: Show Drift Score
+      - name: Final Sentinel Summary
+        if: always()
         run: |
-          echo "--- FINAL SENTINEL REPORT ---"
-          echo "STATUS: $(cat temp_status/status.txt)"
-          echo "DRIFT SCORE: $(cat temp_status/score.txt)%"
+          echo "======================================"
+          echo "   SENTINEL CLOUD MONITOR REPORT"
+          echo "======================================"
+          if [ -f temp_status/status.txt ]; then
+            echo "LAST STATUS: $(cat temp_status/status.txt)"
+            echo "DRIFT SCORE: $(cat temp_status/score.txt)%"
+          else
+            echo "❌ No status files found. Check container logs above."
+          fi
+          echo "======================================"
           
-      # 5. (Optional) Upload the Database so I can download it later
-      # This lets you run the Dashboard locally without running the heavy Docker container
-      - name: Upload Logs
+      - name: Archive Monitoring Database
         uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: sentinel-logs
+          name: sentinel-drift-logs
           path: temp_status/drift_history.db
+          retention-days: 7
