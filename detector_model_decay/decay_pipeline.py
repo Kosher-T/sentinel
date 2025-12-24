@@ -14,6 +14,8 @@ import cv2
 import keras
 import platform
 import psutil
+import json
+import time
 from pathlib import Path
 import feature_extractor as extractor
 from drift_analyzer import calculate_decay_score, calculate_visual_metrics
@@ -21,6 +23,60 @@ import all_config as config
 
 os.environ["CUDA_VISIBLE_DEVICES"] = config.CUDA_VISIBLE_DEVICES
 keras.mixed_precision.set_global_policy('float32')
+
+# --- PERSISTENT MODEL TRACKING ---
+HISTORY_FILE = config.MODEL_DECAY_ROOT / "model_run_history.json"
+
+class ModelMetadataManager:
+    def __init__(self, history_path):
+        self.history_path = history_path
+        self.history = self._load_history()
+
+    def _load_history(self):
+        if self.history_path.exists():
+            try:
+                with open(self.history_path, 'r') as f:
+                    return json.load(f)
+            except json.JSONDecodeError:
+                return {}
+        return {}
+
+    def _save_history(self):
+        # Ensure directory exists before saving
+        self.history_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.history_path, 'w') as f:
+            json.dump(self.history, f, indent=4)
+
+    def get_file_metadata(self, file_path):
+        """Returns a unique signature for the file: name + size + mtime."""
+        if not file_path.exists():
+            return None
+        stats = file_path.stat()
+        return {
+            "filename": file_path.name,
+            "size_bytes": stats.st_size,
+            "modified_time": stats.st_mtime
+        }
+
+    def has_model_changed(self, model_role, model_path):
+        current_meta = self.get_file_metadata(model_path)
+        if not current_meta:
+            return True
+            
+        last_meta = self.history.get(model_role)
+        
+        if last_meta != current_meta:
+            print(f"🔄 Model Change Detected for {model_role}!")
+            print(f"   Old: {last_meta.get('filename') if last_meta else 'None'}")
+            print(f"   New: {current_meta['filename']}")
+            return True
+        return False
+
+    def update_entry(self, model_role, model_path):
+        self.history[model_role] = self.get_file_metadata(model_path)
+        self._save_history()
+
+# --- UTILITIES ---
 
 def log_environment():
     print("\n" + "=" * 45)
@@ -34,14 +90,10 @@ def log_environment():
     print("=" * 45 + "\n")
 
 def select_model_file(directory, label="Model"):
-    """
-    Scans a directory for model files and prompts user selection if multiple exist.
-    """
     if not directory.exists():
         print(f"❌ Directory not found: {directory}")
         return None
 
-    # Common Keras/TF model extensions
     valid_exts = {'.keras', '.h5', '.hdf5'}
     model_files = sorted([f for f in directory.iterdir() if f.suffix in valid_exts or f.is_dir() and (f / "saved_model.pb").exists()])
 
@@ -104,6 +156,7 @@ def run_vfi_inference(vfi_model, output_base_dir, model_name="model", force=Fals
     
     for seq_dir in sequence_dirs:
         out_path = output_base_dir / seq_dir.name
+        # If not forcing, skip if file already exists
         if not force and (out_path / "im7_pred.webp").exists():
             continue
 
@@ -112,7 +165,6 @@ def run_vfi_inference(vfi_model, output_base_dir, model_name="model", force=Fals
         if input_tensor is None: continue
 
         preds = vfi_model.predict(input_tensor, verbose=0)
-        # im7 and im4 are indices 0 and 1 from our model's multi-output
         im7_f = cv2.resize((preds[0][0] * 255).astype(np.uint8), original_dims, interpolation=cv2.INTER_CUBIC)
         im4_f = cv2.resize((preds[1][0] * 255).astype(np.uint8), original_dims, interpolation=cv2.INTER_CUBIC)
 
@@ -124,7 +176,7 @@ def run_vfi_inference(vfi_model, output_base_dir, model_name="model", force=Fals
             print(f"   > Processed {processed} sequences...")
 
     print(f"✅ {model_name} processing complete.")
-    return processed > 0
+    return True # Return true even if processed is 0 (if files existed and weren't forced)
 
 def extract_embeddings(results_dir, model_id, force=False):
     print(f"\n🚀 Feature Extraction: {model_id}")
@@ -146,7 +198,6 @@ def extract_embeddings(results_dir, model_id, force=False):
             print(f"   > Extracting {tag}...")
             emb = extractor.extract_features(feature_model, paths)
             np.save(save_file, emb)
-            print(f"\n   ✅ Saved embeddings to {save_file.name}")
 
 def run_analysis():
     print("\n" + "=" * 45)
@@ -185,7 +236,8 @@ def run_analysis():
 if __name__ == "__main__":
     log_environment()
     
-    # Selection logic for modularity
+    meta_mgr = ModelMetadataManager(HISTORY_FILE)
+    
     fresh_path = select_model_file(config.FRESH_MODEL_PATH.parent, "Fresh Model")
     old_path = select_model_file(config.OLD_MODEL_PATH.parent, "Old Model")
     
@@ -193,25 +245,42 @@ if __name__ == "__main__":
         print("❌ Model selection failed. Exiting.")
         sys.exit(1)
 
-    # 1. Fresh Model
+    # 1. Fresh Model Logic
+    fresh_changed = meta_mgr.has_model_changed("fresh_model", fresh_path)
     fresh_m = load_vfi_model(fresh_path)
     if fresh_m:
-        fresh_ran = run_vfi_inference(fresh_m, config.FRESH_RESULTS_DIR, "Fresh Model")
-        extract_embeddings(config.FRESH_RESULTS_DIR, "fresh_model", force=fresh_ran)
+        run_vfi_inference(fresh_m, config.FRESH_RESULTS_DIR, "Fresh Model", force=fresh_changed)
+        meta_mgr.update_entry("fresh_model", fresh_path)
+        extract_embeddings(config.FRESH_RESULTS_DIR, "fresh_model", force=fresh_changed)
         del fresh_m
         keras.backend.clear_session()
 
-    # 2. Old Model
+    # 2. Old Model Logic
     print("\n" + "-"*30)
-    if input("🔄 Run Old Model inference? (y/n) [y]: ").lower() != 'n':
+    old_changed = meta_mgr.has_model_changed("old_model", old_path)
+    
+    should_run_old = False
+    if old_changed:
+        print("⚡ New model detected for 'Old Model' role. Auto-triggering inference.")
+        should_run_old = True
+    else:
+        # Only ask if the model IS THE SAME as last time
+        user_choice = input("🔄 Old Model matches history. Re-run inference anyway? (y/n) [n]: ").lower()
+        if user_choice == 'y':
+            should_run_old = True
+
+    if should_run_old:
         old_m = load_vfi_model(old_path)
         if old_m:
-            # We force inference for the old model if user says yes to ensure fresh comparisons
-            old_ran = run_vfi_inference(old_m, config.OLD_RESULTS_DIR, "Old Model", force=True)
-            extract_embeddings(config.OLD_RESULTS_DIR, "old_model", force=old_ran)
+            # If we are here because of a change, we MUST force. 
+            # If we are here because of user choice, we also force.
+            run_vfi_inference(old_m, config.OLD_RESULTS_DIR, "Old Model", force=True)
+            meta_mgr.update_entry("old_model", old_path)
+            extract_embeddings(config.OLD_RESULTS_DIR, "old_model", force=True)
             del old_m
             keras.backend.clear_session()
     else:
+        # If skipping inference, we still ensure embeddings exist for the current old model results
         extract_embeddings(config.OLD_RESULTS_DIR, "old_model", force=False)
 
     run_analysis()
