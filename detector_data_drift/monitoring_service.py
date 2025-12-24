@@ -25,7 +25,7 @@ except ImportError:
 # Imports for internal logic
 try:
     import feature_extractor as detector
-    from detector_model_decay.drift_analyzer import analyze_drift
+    from detector_data_drift.drift_analyzer import analyze_drift
 except ImportError:
     # Fallback for different execution contexts
     try:
