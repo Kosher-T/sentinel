@@ -11,12 +11,15 @@ import all_config as config
 
 # --- DB INITIALIZATION ---
 # Dashboard expects: temp_status/drift_history.db
+# We use all_config to ensure the path is absolute relative to the project root
 DB_PATH = config.PROJECT_ROOT / "temp_status" / "drift_history.db"
 
 def init_db():
-    """Ensures the database and table exist before running."""
+    """Ensures the database folder and table exist before running."""
+    # Create the temp_status folder if it doesn't exist
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    
+    conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     # Schema matches the load_data() function in dashboard.py
     cursor.execute('''
@@ -33,7 +36,7 @@ def init_db():
 
 def log_to_db(score, threshold, status):
     """Writes a new monitoring entry to the SQLite database."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO drift_logs (drift_score, threshold, status)
@@ -49,9 +52,8 @@ def run_drift_check():
     """
     print("🔍 [Sentinel] Step 1: Checking Data Drift...")
     try:
-        # Placeholder for actual monitoring logic
+        # This will eventually import your actual drift logic:
         # from detector_data_drift.monitoring_service import check_current_drift
-        # score = check_current_drift()
         
         # Simulated score for demonstration
         score = 12.5 
@@ -64,7 +66,10 @@ def run_drift_check():
 
 def check_retrain_trigger():
     """Checks the DB for a streak of failures to avoid jitter."""
-    conn = sqlite3.connect(DB_PATH)
+    if not DB_PATH.exists():
+        return False
+
+    conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     # Check the history of the last few runs defined in config
     cursor.execute('''
@@ -78,17 +83,15 @@ def check_retrain_trigger():
         return False
     
     fail_count = sum(1 for row in rows if row[0] == "FAIL")
-    # If the ratio of failures is too high, trigger retraining
+    # If the ratio of failures is too high (e.g. 60%), trigger retraining
     return (fail_count / config.RETRAIN_TRIGGER_COUNT) >= config.DRIFT_FAILURE_RATIO
 
 def trigger_retraining_workflow():
     """
     Step 2: Model Retraining
-    In a full production environment, this might trigger a GitHub Action 
-    or a heavy Dockerized training job.
+    Simulates the retraining trigger.
     """
     print("🏗️ [Sentinel] Step 2: Persistence of Drift detected. Triggering Retraining...")
-    # Simulation of training time
     time.sleep(1) 
     print("✅ [Sentinel] Retraining complete. Challenger model produced.")
     return True
@@ -100,16 +103,12 @@ def run_decay_audit():
     """
     print("🛡️ [Sentinel] Step 3: Running Decay Audit on Challenger...")
     try:
-        # Importing logic from your uploaded decay_pipeline.py structure
-        from detector_model_decay.decay_pipeline import ModelMetadataManager, run_analysis
+        # Using the actual logic from your project structure
+        from detector_model_decay.decay_pipeline import run_analysis
         
-        # We simulate the audit logic here
-        # In practice, you'd run the inference and get the comparison scores
-        print("   > Running Wasserstein and Visual Metric comparison...")
-        return True # Assume the challenger passed for now
-    except ImportError:
-        print("⚠️ Decay pipeline modules not found. Skipping detailed audit.")
-        return True
+        # run_analysis manages the full comparison and reporting
+        run_analysis()
+        return True # Assume success if no exception raised
     except Exception as e:
         print(f"❌ [Sentinel] Decay Audit failed: {e}")
         return False
@@ -126,6 +125,7 @@ def main():
     print(f"📊 Result: {score}% Drift | Threshold: {config.DRIFT_THRESHOLD}% | Status: {status}")
 
     # 2. Evaluate Health & Self-Heal
+    # Trigger retrain if CURRENT is fail OR if HISTORY suggests we are unstable
     if status == "FAIL" or check_retrain_trigger():
         if check_retrain_trigger():
             print("🚨 Alert: Stability threshold breached. System requires intervention.")
