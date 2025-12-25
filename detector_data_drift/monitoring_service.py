@@ -5,57 +5,62 @@ import datetime
 import numpy as np
 from pathlib import Path
 
-# --- DYNAMIC PATH RESOLUTION ---
-# Resolves the project root where all_config.py now resides
-# Structure: project_root/detector_data_drift/monitoring_service.py
+# --- ROBUST PATH RESOLUTION ---
+# Get the absolute path of the directory containing this script
+# Structure: [PROJECT_ROOT]/detector_data_drift/monitoring_service.py
 CURRENT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CURRENT_DIR.parent
 
-# 1. Ensure the project root is in sys.path to find all_config.py
+# Priority 1: Add PROJECT_ROOT to sys.path so 'import all_config' works
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# 2. Ensure CURRENT_DIR is in sys.path to find local modules (feature_extractor, etc.)
+# Priority 2: Add CURRENT_DIR to sys.path so local modules work without package prefix
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
-# Attempt to load the consolidated configuration from the project root
+# --- CONFIGURATION LOADING ---
 try:
     import all_config as config
-    print("✅ Successfully loaded all_config from project root")
+    print(f"✅ Loaded all_config.py from: {PROJECT_ROOT}")
 except ImportError:
-    print("⚠️ Warning: all_config.py not found in root. Using environment defaults.")
+    print(f"⚠️ Warning: all_config.py not found at {PROJECT_ROOT}. Using environment defaults.")
     config = None
 
-# --- LOCAL IMPORTS ---
-# We import directly since CURRENT_DIR is now in the path
+# --- LOCAL MODULE IMPORTS ---
 try:
+    # Import directly from the same folder
     import feature_extractor as detector
+    print("✅ Loaded feature_extractor.py")
 except ImportError:
-    print("❌ Critical Error: Could not find feature_extractor.py")
+    print(f"❌ Critical Error: Could not find feature_extractor.py in {CURRENT_DIR}")
     sys.exit(1)
 
 try:
-    # Look for drift_analyzer in the neighboring folder
-    from drift_analyzer import analyze_drift
+    # Try to find drift_analyzer in the neighboring folder or project root
+    try:
+        from detector_model_decay.drift_analyzer import analyze_drift
+    except ImportError:
+        from drift_analyzer import analyze_drift
+    print("✅ Loaded drift_analyzer")
 except ImportError:
-    # Fallback if the file is moved or in the parent folder
+    print("⚠️ Warning: drift_analyzer not found. Using fallback logic.")
     def analyze_drift(b, n): return 0.0
 
-# --- CONFIGURATION MAPPING ---
+# --- PATH & THRESHOLD MAPPING ---
 NEW_DATA_PATH = Path(os.environ.get("NEW_DATA_PATH", "/app/incoming_data"))
 
-# Use the root from all_config if available, else a default relative to script
+# Use paths from config if they exist, otherwise use defaults
 DEFAULT_OUTPUT = getattr(config, 'DRIFT_MONITOR_ROOT', PROJECT_ROOT / "data" / "monitoring" / "drift") if config else CURRENT_DIR / "status_output"
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", str(DEFAULT_OUTPUT)))
 
-# File paths for persistence
+# Persistence files
 DB_PATH = OUTPUT_DIR / "drift_history.db"
 BASELINE_PATH = OUTPUT_DIR / "baseline_embeddings.npy"
 STATUS_PATH = OUTPUT_DIR / "status.txt"
 SCORE_PATH = OUTPUT_DIR / "score.txt"
 
-# Thresholds: Environment variable > all_config > hardcoded default
+# Threshold priority: Environment Var > all_config.py > Hardcoded Default
 try:
     default_threshold = getattr(config, 'DRIFT_THRESHOLD', 30.0) if config else 30.0
     DRIFT_THRESHOLD = float(os.environ.get("DRIFT_THRESHOLD", default_threshold))
@@ -65,6 +70,7 @@ except (ValueError, TypeError):
 MIN_SAMPLES_FOR_CHECK = 50 
 
 def init_db():
+    """Initializes SQLite database for drift history."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
     c = conn.cursor()
@@ -74,6 +80,7 @@ def init_db():
     conn.close()
 
 def log_to_db(score, status, threshold):
+    """Logs the monitoring result."""
     conn = sqlite3.connect(str(DB_PATH))
     c = conn.cursor()
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -83,6 +90,7 @@ def log_to_db(score, status, threshold):
     conn.close()
 
 def get_total_image_count(directory):
+    """Counts images in the target directory."""
     valid_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
     if not directory.exists(): return 0
     return sum(1 for p in directory.rglob('*') if p.suffix.lower() in valid_exts)
