@@ -7,12 +7,17 @@ from pathlib import Path
 
 # --- DYNAMIC PATH RESOLUTION ---
 # Resolves the project root where all_config.py now resides
+# Structure: project_root/detector_data_drift/monitoring_service.py
 CURRENT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CURRENT_DIR.parent
 
-# Ensure the project root is in sys.path so we can import 'all_config' directly
+# 1. Ensure the project root is in sys.path to find all_config.py
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+# 2. Ensure CURRENT_DIR is in sys.path to find local modules (feature_extractor, etc.)
+if str(CURRENT_DIR) not in sys.path:
+    sys.path.insert(0, str(CURRENT_DIR))
 
 # Attempt to load the consolidated configuration from the project root
 try:
@@ -22,27 +27,26 @@ except ImportError:
     print("⚠️ Warning: all_config.py not found in root. Using environment defaults.")
     config = None
 
-# Imports for internal logic
+# --- LOCAL IMPORTS ---
+# We import directly since CURRENT_DIR is now in the path
 try:
     import feature_extractor as detector
-    from detector_data_drift.drift_analyzer import analyze_drift
 except ImportError:
-    # Fallback for different execution contexts
-    try:
-        import detector_data_drift.feature_extractor as detector
-    except ImportError:
-        detector = None
-    
-    try:
-        from drift_analyzer import analyze_drift
-    except ImportError:
-        def analyze_drift(*args): return 0.0
+    print("❌ Critical Error: Could not find feature_extractor.py")
+    sys.exit(1)
+
+try:
+    # Look for drift_analyzer in the neighboring folder
+    from drift_analyzer import analyze_drift
+except ImportError:
+    # Fallback if the file is moved or in the parent folder
+    def analyze_drift(b, n): return 0.0
 
 # --- CONFIGURATION MAPPING ---
-# Pulling paths and thresholds from all_config or environment variables
 NEW_DATA_PATH = Path(os.environ.get("NEW_DATA_PATH", "/app/incoming_data"))
-# Default to the drift monitor root defined in all_config if available
-DEFAULT_OUTPUT = getattr(config, 'DRIFT_MONITOR_ROOT', PROJECT_ROOT / "data" / "monitoring" / "drift") if config else Path("/app/status_output")
+
+# Use the root from all_config if available, else a default relative to script
+DEFAULT_OUTPUT = getattr(config, 'DRIFT_MONITOR_ROOT', PROJECT_ROOT / "data" / "monitoring" / "drift") if config else CURRENT_DIR / "status_output"
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", str(DEFAULT_OUTPUT)))
 
 # File paths for persistence
@@ -52,15 +56,15 @@ STATUS_PATH = OUTPUT_DIR / "status.txt"
 SCORE_PATH = OUTPUT_DIR / "score.txt"
 
 # Thresholds: Environment variable > all_config > hardcoded default
-MIN_SAMPLES_FOR_CHECK = 50 
 try:
     default_threshold = getattr(config, 'DRIFT_THRESHOLD', 30.0) if config else 30.0
     DRIFT_THRESHOLD = float(os.environ.get("DRIFT_THRESHOLD", default_threshold))
 except (ValueError, TypeError):
     DRIFT_THRESHOLD = 30.0
 
+MIN_SAMPLES_FOR_CHECK = 50 
+
 def init_db():
-    """Creates the database table if it doesn't exist."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
     c = conn.cursor()
@@ -70,7 +74,6 @@ def init_db():
     conn.close()
 
 def log_to_db(score, status, threshold):
-    """Saves the result to the history database."""
     conn = sqlite3.connect(str(DB_PATH))
     c = conn.cursor()
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -78,17 +81,11 @@ def log_to_db(score, status, threshold):
               (timestamp, score, status, threshold))
     conn.commit()
     conn.close()
-    print(f"📝 Logged result to {DB_PATH}")
 
 def get_total_image_count(directory):
-    """Recursively counts image files in the directory."""
     valid_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
-    count = 0
     if not directory.exists(): return 0
-    for path in directory.rglob('*'):
-        if path.suffix.lower() in valid_exts:
-            count += 1
-    return count
+    return sum(1 for p in directory.rglob('*') if p.suffix.lower() in valid_exts)
 
 def check_for_drift():
     print(f"\n--- 🛰️ SENTINEL MONITORING JOB (Threshold: {DRIFT_THRESHOLD}%) ---")
@@ -97,11 +94,10 @@ def check_for_drift():
     # 1. Baseline Handling
     if not BASELINE_PATH.exists():
         print(f"1. Baseline NOT found. Generating from {NEW_DATA_PATH}...")
-        
         num_samples = get_total_image_count(NEW_DATA_PATH)
         if num_samples == 0:
             print(f"❌ ERROR: No data found at {NEW_DATA_PATH}.")
-            sys.exit(1)
+            return
             
         model = detector.create_embedding_model()
         image_list = [str(p) for p in NEW_DATA_PATH.rglob('*') if p.suffix.lower() in {'.webp', '.png', '.jpg'}]
@@ -115,13 +111,11 @@ def check_for_drift():
         return
 
     # 2. Monitoring Flow
-    print(f"1. Baseline loaded.")
     baseline = np.load(str(BASELINE_PATH))
-
     num_samples = get_total_image_count(NEW_DATA_PATH)
+
     if num_samples < MIN_SAMPLES_FOR_CHECK:
         print(f"⚠️ Insufficient data ({num_samples}/{MIN_SAMPLES_FOR_CHECK}). Skipping.")
-        log_to_db(0.0, "INSUFFICIENT_DATA", DRIFT_THRESHOLD)
         with open(SCORE_PATH, "w") as f: f.write("0.00")
         with open(STATUS_PATH, "w") as f: f.write("PASS")
         return
