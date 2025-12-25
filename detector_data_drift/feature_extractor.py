@@ -9,9 +9,12 @@ from keras.applications.resnet50 import ResNet50, preprocess_input as resnet_pre
 
 # Factory for standard architectures used in Drift Detection
 MODEL_FACTORY = {
-    "MobileNetV2": {"class": MobileNetV2, "preprocess": mobile_preprocess},
-    "VGG16": {"class": VGG16, "preprocess": vgg_preprocess},
-    "ResNet50": {"class": ResNet50, "preprocess": resnet_preprocess}
+    "MobileNetV2": {"class": MobileNetV2,
+                    "preprocess": mobile_preprocess},
+    "VGG16": {"class": VGG16,
+              "preprocess": vgg_preprocess},
+    "ResNet50": {"class": ResNet50,
+                 "preprocess": resnet_preprocess}
 }
 
 def create_embedding_model(model_type="MobileNetV2", input_shape=(224, 224, 3)):
