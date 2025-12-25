@@ -2,7 +2,8 @@ venv/
 __pycache__/
 
 data/model_decay/
-data/data_drift/
+data/data_drift/original_dataset/
+data/data_drift/incoming_data/
 
 
 one_time_tool.py
