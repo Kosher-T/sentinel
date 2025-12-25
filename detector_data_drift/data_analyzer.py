@@ -1,79 +1,99 @@
-# Receives both baseline and drifted datasets as numpy arrays.
-# Uses Wasserstein Distance (Earth Mover's Distance) to quantify drift.
-# Reduces dimensionality with PCA before distance calculation.
-
 import numpy as np
-from scipy.stats import wasserstein_distance
+from scipy.stats import wasserstein_distance, entropy
 from sklearn.decomposition import PCA
-import os
+from sklearn.metrics.pairwise import cosine_similarity
 
-# --- CONFIGURATION ---
-# SENSITIVITY_FACTOR controls how quickly the score jumps to 100%.
-# Dropping from 2.0 to 1.5 to provide a slightly more relaxed scoring for the magnitude of drift.
-SENSITIVITY_FACTOR = 1.5 
+def kl_divergence(p_samples, q_samples, bins=50):
+    """Calculates KL Divergence between two distributions using a histogram approach."""
+    # Create a common range for bins
+    min_val = min(np.min(p_samples), np.min(q_samples))
+    max_val = max(np.max(p_samples), np.max(q_samples))
+    
+    p_hist, _ = np.histogram(p_samples, bins=bins, range=(min_val, max_val), density=True)
+    q_hist, _ = np.histogram(q_samples, bins=bins, range=(min_val, max_val), density=True)
+    
+    # Add small epsilon to avoid division by zero or log(0)
+    p_hist += 1e-10
+    q_hist += 1e-10
+    
+    return entropy(p_hist, q_hist)
 
-def analyze_drift(baseline, drifted):
+def mmd_linear(X, Y):
+    """Calculates a linear version of Maximum Mean Discrepancy."""
+    delta = np.mean(X, axis=0) - np.mean(Y, axis=0)
+    return np.sqrt(np.dot(delta, delta.T))
+
+def analyze_drift(baseline, current):
     """
-    1. Reduces dimensionality using PCA.
-    2. Calculates Wasserstein Distance (Earth Mover's Distance).
-    3. Maps distance to a 0-100% score using a sigmoid-like function.
+    Combines Wasserstein, KL, Cosine, and MMD into a single Drift Score.
+    
+    Args:
+        baseline (np.ndarray): Baseline embeddings (N, D)
+        current (np.ndarray): New batch embeddings (M, D)
+    Returns:
+        float: Final Drift Score (0-100%)
+        dict: Breakdown of individual metrics
     """
-    if baseline.shape[1] != drifted.shape[1]:
-        raise ValueError("Embedding feature counts do not match!")
-        
-    print(f"Original Feature Count: {baseline.shape[1]}")
-    
-    # --- STEP 1: Dimensionality Reduction (PCA) ---
-    # We must have enough samples (rows) to perform PCA. Min samples = min(len(datasets))
-    n_samples_min = min(len(baseline), len(drifted))
-    n_features = baseline.shape[1]
-    
-    # If the number of features is greater than min samples, PCA will fail or be meaningless.
-    if n_samples_min <= n_features:
-        print(f"WARNING: Too few samples ({n_samples_min}) for full PCA. Capping components.")
-        # Target variance might be unreachable, cap components by sample size
-        n_components_pca = n_samples_min - 1 if n_samples_min > 1 else 1
-    else:
-        # Default target variance approach
-        n_components_pca = 0.95
+    if baseline.shape[1] != current.shape[1]:
+        raise ValueError("Feature dimensions must match.")
 
-    print("Running PCA to reduce noise...")
-    try:
-        pca = PCA(n_components=n_components_pca)
-        pca.fit(baseline)
-        baseline_pca = pca.transform(baseline)
-        drifted_pca = pca.transform(drifted)
-        print(f"PCA reduced features from {n_features} to {baseline_pca.shape[1]}")
-    except Exception as e:
-        print(f"PCA Failed. Falling back to raw features. Error: {e}")
-        baseline_pca = baseline
-        drifted_pca = drifted
+    # 1. Dimensionality Reduction (PCA) 
+    # Helps metrics like KL and Wasserstein run faster and on cleaner signals
+    n_components = min(0.95, min(baseline.shape[0], current.shape[0]) - 1)
+    pca = PCA(n_components=n_components)
+    b_pca = pca.fit_transform(baseline)
+    c_pca = pca.transform(current)
+    num_dims = b_pca.shape[1]
 
-    # --- STEP 2: Wasserstein Distance ---
-    num_features = baseline_pca.shape[1]
-    total_distance = 0.0
+    # --- Metric 1: Wasserstein (EMD) ---
+    wd_list = [wasserstein_distance(b_pca[:, i], c_pca[:, i]) for i in range(num_dims)]
+    avg_wd = np.mean(wd_list)
 
-    # We calculate the distance for every feature and average it
-    for i in range(num_features):
-        b_feat = baseline_pca[:, i]
-        d_feat = drifted_pca[:, i]
-        
-        # Calculate Earth Mover's Distance for this feature
-        wd = wasserstein_distance(b_feat, d_feat)
-        total_distance += wd
+    # --- Metric 2: KL Divergence ---
+    kl_list = [kl_divergence(b_pca[:, i], c_pca[:, i]) for i in range(num_dims)]
+    avg_kl = np.mean(kl_list)
 
-    avg_wasserstein_dist = total_distance / num_features
+    # --- Metric 3: Cosine Similarity (Centroid Drift) ---
+    b_centroid = np.mean(baseline, axis=0).reshape(1, -1)
+    c_centroid = np.mean(current, axis=0).reshape(1, -1)
+    # Cosine distance = 1 - similarity
+    cos_dist = 1 - cosine_similarity(b_centroid, c_centroid)[0][0]
 
-    # --- STEP 3: Normalize to 0-100% Scale ---
-    # Formula: Score = (1 - e^(-sensitivity * distance)) * 100
-    
-    drift_score = (1 - np.exp(-SENSITIVITY_FACTOR * avg_wasserstein_dist)) * 100
+    # --- Metric 4: Linear MMD ---
+    mmd_val = mmd_linear(baseline, current)
 
-    print("\n--- Summary of Drift Detection (Wasserstein) ---")
-    print(f"Average Raw Distance: {avg_wasserstein_dist:.4f}")
-    print(f"Calculated Drift Score: {drift_score:.2f}%")
-    
-    return drift_score, None
+    # --- STEP 2: Normalization & Weighting ---
+    # Every metric has a different natural scale. We map them to 0.0 - 1.0
+    # Values based on empirical observation of ResNet/MobileNet embeddings
+    s_wd = 1 - np.exp(-1.5 * avg_wd)
+    s_kl = 1 - np.exp(-0.5 * avg_kl)
+    s_cos = 1 - np.exp(-5.0 * cos_dist)
+    s_mmd = 1 - np.exp(-1.2 * mmd_val)
+
+    # Weighted Average (Adjust weights based on what you trust most)
+    # Wasserstein and MMD are usually the most stable for images.
+    weights = {
+        'wasserstein': 0.35,
+        'mmd': 0.35,
+        'cosine': 0.15,
+        'kl': 0.15
+    }
+
+    final_score = (
+        s_wd * weights['wasserstein'] +
+        s_mmd * weights['mmd'] +
+        s_cos * weights['cosine'] +
+        s_kl * weights['kl']
+    ) * 100
+
+    metrics_breakdown = {
+        "wasserstein": round(s_wd * 100, 2),
+        "mmd": round(s_mmd * 100, 2),
+        "cosine": round(s_cos * 100, 2),
+        "kl": round(s_kl * 100, 2)
+    }
+
+    return round(final_score, 2), metrics_breakdown
 
 if __name__ == "__main__":
-    pass
+    print("Drift Analyzer logic ready. Call analyze_drift(baseline, current) from your service.")
