@@ -1,28 +1,36 @@
 # This module defines the parameters for the VFI model being monitored.
-# The idea is that if you switch to a different model (e.g., VGG, Custom CNN),
-# you only change this file and the embedding generation code.
+# If you switch backbones (e.g., from MobileNetV2 to VGG16), update this file.
 
 from pathlib import Path
 import os
 
+# --- EMBEDDING BACKBONE SETTINGS ---
+# Used by both drift_pipeline and decay_pipeline for feature extraction
 EMBEDDING_MODEL_TYPE = "VGG16"
-EMBEDDING_INPUT_SHAPE = (224, 224, 3) # Required input shape for the model
-EMBEDDING_FEATURE_COUNT = 512 # Output feature vector length (MobileNetV2's final dense layer size)
+EMBEDDING_INPUT_SHAPE = (224, 224, 3) 
+EMBEDDING_FEATURE_COUNT = 512 # VGG16 Global Average Pooling output size
 
 # --- PROJECT ROOT ---
-# This allows the config to work regardless of which subfolder a script is run from
+# Resolves the absolute path to the project folder
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 # --- DATA SOURCE PATHS (THE GOLDEN SET) ---
+# The 'Golden Set' is the ground-truth benchmark for model performance
 GOLDEN_SET_DIR = PROJECT_ROOT / "data" / "golden_set_septuplets"
 BASE_DATA_DIR = PROJECT_ROOT / "data"
 
+# --- DRIFT SPECIFIC PATHS ---
+# Where original training data and incoming production data are stored
+ORIGINAL_DATA_PATH = BASE_DATA_DIR / "data_drift" / "original_dataset"
+INCOMING_DATA_PATH = BASE_DATA_DIR / "data_drift" / "incoming_data"
+
 # --- MONITORING ROOTS ---
+# Centralized locations for persistence and logs
 MODEL_DECAY_ROOT = PROJECT_ROOT / "data" / "monitoring" / "decay"
 DRIFT_MONITOR_ROOT = PROJECT_ROOT / "data" / "monitoring" / "drift"
 
 # --- MODEL PATHS ---
-# Directories where the latest 'Fresh' and 'Old' models are stored
+# Directories where the latest 'Fresh' and 'Old' models are stored for decay comparison
 OLD_MODEL_DIR = PROJECT_ROOT / "models" / "old_model"
 FRESH_MODEL_DIR = PROJECT_ROOT / "models" / "fresh_model"
 
@@ -30,24 +38,27 @@ FRESH_MODEL_DIR = PROJECT_ROOT / "models" / "fresh_model"
 OLD_MODEL_PATH = OLD_MODEL_DIR / "vfi_model_old.keras"
 FRESH_MODEL_PATH = FRESH_MODEL_DIR / "vfi_model_fresh.keras"
 
-# --- RESULTS & EMBEDDINGS ---
+# --- RESULTS & EMBEDDINGS (DECAY PIPELINE) ---
+# Intermediate outputs for the decay pipeline
 FRESH_RESULTS_DIR = MODEL_DECAY_ROOT / "results" / "fresh"
 OLD_RESULTS_DIR = MODEL_DECAY_ROOT / "results" / "old"
 EMBEDDINGS_ROOT = MODEL_DECAY_ROOT / "embeddings"
 
 # --- DRIFT & DECAY THRESHOLDS ---
-DECAY_THRESHOLD = 15.0  # % drop in Golden Set performance
-DRIFT_THRESHOLD = 30.0  # Wasserstein distance limit for incoming data
+DECAY_THRESHOLD = 15.0  # % drop in Golden Set performance (Wasserstein distance)
+DRIFT_THRESHOLD = 30.0  # % distance limit for incoming production data
 
 # --- CONTINUOUS MONITORING SETTINGS ---
-MONITOR_SCHEDULE = "0 */6 * * *" # Every 6 hours
-RETRAIN_TRIGGER_COUNT = 5       # Consecutive fails to trigger retrain
-DRIFT_FAILURE_RATIO = 0.6       # 60% failure in recent window triggers alert
+MONITOR_SCHEDULE = "0 */6 * * *" # Cron: Every 6 hours
+RETRAIN_TRIGGER_COUNT = 5       # Consecutive fails required to trigger an automated retrain
+DRIFT_FAILURE_RATIO = 0.6       # 60% failure in recent window triggers system alert
 
-# --- DATABASE & LOGGING (For Dashboard) ---
+# --- DATABASE & LOGGING (For Dashboard & Persistence) ---
 DRIFT_HISTORY_DB = DRIFT_MONITOR_ROOT / "drift_history.json"
 RETRAIN_LOG = DRIFT_MONITOR_ROOT / "retrain_events.json"
 MODEL_HISTORY_FILE = MODEL_DECAY_ROOT / "model_run_history.json"
 
 # --- HARDWARE ---
-CUDA_VISIBLE_DEVICES = "-1" # Force CPU for local dev/monitoring
+# Forces CPU for monitoring tasks to avoid interrupting heavy GPU training sessions
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+CUDA_VISIBLE_DEVICES = "-1"
