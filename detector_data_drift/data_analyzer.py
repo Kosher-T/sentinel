@@ -5,14 +5,14 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 def kl_divergence(p_samples, q_samples, bins=50):
     """Calculates KL Divergence between two distributions using a histogram approach."""
-    # Create a common range for bins
+    # We add a tiny 1% padding to the range to prevent bin-hopping at the edges
     min_val = min(np.min(p_samples), np.min(q_samples))
     max_val = max(np.max(p_samples), np.max(q_samples))
+    padding = (max_val - min_val) * 0.01
     
-    p_hist, _ = np.histogram(p_samples, bins=bins, range=(min_val, max_val), density=True)
-    q_hist, _ = np.histogram(q_samples, bins=bins, range=(min_val, max_val), density=True)
+    p_hist, _ = np.histogram(p_samples, bins=bins, range=(min_val - padding, max_val + padding), density=True)
+    q_hist, _ = np.histogram(q_samples, bins=bins, range=(min_val - padding, max_val + padding), density=True)
     
-    # Add small epsilon to avoid division by zero or log(0)
     p_hist += 1e-10
     q_hist += 1e-10
     
@@ -25,75 +25,57 @@ def mmd_linear(X, Y):
 
 def analyze_drift(baseline, current):
     """
-    Combines Wasserstein, KL, Cosine, and MMD into a single Drift Score.
-    
-    Args:
-        baseline (np.ndarray): Baseline embeddings (N, D)
-        current (np.ndarray): New batch embeddings (M, D)
-    Returns:
-        float: Final Drift Score (0-100%)
-        dict: Breakdown of individual metrics
+    Combines Wasserstein, KL, Cosine, and MMD into a single normalized drift score (0.0 to 1.0).
     """
-    if baseline.shape[1] != current.shape[1]:
-        raise ValueError("Feature dimensions must match.")
-
-    # 1. Dimensionality Reduction (PCA) 
-    # Helps metrics like KL and Wasserstein run faster and on cleaner signals
-    n_components = min(0.95, min(baseline.shape[0], current.shape[0]) - 1)
-    pca = PCA(n_components=n_components)
+    # Fix: Added random_state=42 and svd_solver='full' for absolute determinism
+    n_comp = min(16, baseline.shape[0], baseline.shape[1])
+    pca = PCA(n_components=n_comp, svd_solver='full', random_state=42)
+    
     b_pca = pca.fit_transform(baseline)
     c_pca = pca.transform(current)
-    num_dims = b_pca.shape[1]
 
-    # --- Metric 1: Wasserstein (EMD) ---
-    wd_list = [wasserstein_distance(b_pca[:, i], c_pca[:, i]) for i in range(num_dims)]
+    # --- Metric 1: Wasserstein ---
+    wd_list = [wasserstein_distance(b_pca[:, i], c_pca[:, i]) for i in range(b_pca.shape[1])]
     avg_wd = np.mean(wd_list)
 
     # --- Metric 2: KL Divergence ---
-    kl_list = [kl_divergence(b_pca[:, i], c_pca[:, i]) for i in range(num_dims)]
-    avg_kl = np.mean(kl_list)
+    kl_list = [kl_divergence(b_pca[:, i], c_pca[:, i]) for i in range(b_pca.shape[1])]
+    avg_kl = np.mean(kl_list)  # type:ignore
 
-    # --- Metric 3: Cosine Similarity (Centroid Drift) ---
+    # --- Metric 3: Cosine Distance (Centroid Comparison) ---
     b_centroid = np.mean(baseline, axis=0).reshape(1, -1)
     c_centroid = np.mean(current, axis=0).reshape(1, -1)
-    # Cosine distance = 1 - similarity
     cos_dist = 1 - cosine_similarity(b_centroid, c_centroid)[0][0]
 
     # --- Metric 4: Linear MMD ---
     mmd_val = mmd_linear(baseline, current)
 
-    # --- STEP 2: Normalization & Weighting ---
-    # Every metric has a different natural scale. We map them to 0.0 - 1.0
-    # Values based on empirical observation of ResNet/MobileNet embeddings
-    s_wd = 1 - np.exp(-1.5 * avg_wd)
+    # --- STEP 2: Normalization (The Squashing Functions) ---
+    s_wd = 1 - np.exp(-0.1 * avg_wd) 
     s_kl = 1 - np.exp(-0.5 * avg_kl)
     s_cos = 1 - np.exp(-5.0 * cos_dist)
-    s_mmd = 1 - np.exp(-1.2 * mmd_val)
+    s_mmd = 1 - np.exp(-0.05 * mmd_val) 
 
-    # Weighted Average (Adjust weights based on what you trust most)
-    # Wasserstein and MMD are usually the most stable for images.
+    # Updated weights: Giving Cosine the majority (60%)
     weights = {
-        'wasserstein': 0.35,
-        'mmd': 0.35,
-        'cosine': 0.15,
-        'kl': 0.15
+        'cosine': 0.60,
+        'wasserstein': 0.20,
+        'kl': 0.15,
+        'mmd': 0.05
     }
 
     final_score = (
+        s_cos * weights['cosine'] +
         s_wd * weights['wasserstein'] +
         s_mmd * weights['mmd'] +
-        s_cos * weights['cosine'] +
         s_kl * weights['kl']
-    ) * 100
+    )
 
     metrics_breakdown = {
-        "wasserstein": round(s_wd * 100, 2),
-        "mmd": round(s_mmd * 100, 2),
-        "cosine": round(s_cos * 100, 2),
-        "kl": round(s_kl * 100, 2)
+        'wasserstein': s_wd,
+        'mmd': s_mmd,
+        'cosine': s_cos,
+        'kl': s_kl
     }
 
-    return round(final_score, 2), metrics_breakdown
-
-if __name__ == "__main__":
-    print("Drift Analyzer logic ready. Call analyze_drift(baseline, current) from your service.")
+    return final_score, metrics_breakdown

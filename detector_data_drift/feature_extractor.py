@@ -1,4 +1,5 @@
 import os
+import sys
 import numpy as np
 import tensorflow as tf
 import keras
@@ -6,13 +7,16 @@ from keras.preprocessing import image
 from keras.applications.mobilenet_v2 import MobileNetV2, preprocess_input as mobile_preprocess
 from keras.applications.vgg16 import VGG16, preprocess_input as vgg_preprocess
 from keras.applications.resnet50 import ResNet50, preprocess_input as resnet_preprocess
-import all_config
+from pathlib import Path
 
-# Import your central configuration
-try:
-    import all_config
-except ImportError:
-    all_config = None
+# Load global configuration
+file_path = Path(__file__).resolve()
+project_root = file_path.parent.parent
+
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
+
+import all_config as config
 
 # Factory for standard architectures
 MODEL_FACTORY = {
@@ -21,75 +25,79 @@ MODEL_FACTORY = {
     "ResNet50": {"class": ResNet50, "preprocess": resnet_preprocess}
 }
 
-def create_embedding_model(model_type=None, input_shape=None):
-    """
-    Initializes a pre-trained backbone. 
-    Defaults to values in all_config if not explicitly provided.
-    """
-    # Fallback logic: Argument > Config File > Hardcoded Default
-    m_type = model_type or (all_config.EMBEDDING_MODEL_TYPE if all_config else "MobileNetV2")
-    i_shape = input_shape or (all_config.EMBEDDING_INPUT_SHAPE if all_config else (224, 224, 3))
+BATCH_SIZE = 32
 
-    if m_type not in MODEL_FACTORY:
-        raise ValueError(f"Unsupported model: {m_type}. Options: {list(MODEL_FACTORY.keys())}")
+def get_recursive_image_paths(directory, extensions=('.png', '.jpg', '.jpeg', '.webp')):
+    """
+    Scours a directory and all subdirectories for images.
+    """
+    dir_path = Path(directory)
+    image_paths = []
+    for ext in extensions:
+        image_paths.extend(list(dir_path.rglob(f"*{ext}")))
     
-    print(f"Feature Extractor: Loading {m_type} with ImageNet weights...")
-    base = MODEL_FACTORY[m_type]["class"](
+    print(f"🔍 Scoured {directory}: Found {len(image_paths)} images across all subfolders.")
+    return [str(p) for p in image_paths]
+
+def create_embedding_model():
+    """
+    Creates the feature extraction model based on config settings.
+    """
+    if config.EMBEDDING_MODEL_TYPE not in MODEL_FACTORY:
+        raise ValueError(f"Unsupported model type: {config.EMBEDDING_MODEL_TYPE}")
+    
+    base_class = MODEL_FACTORY[config.EMBEDDING_MODEL_TYPE]["class"]
+    base = base_class(
         weights='imagenet', 
         include_top=False, 
-        input_shape=i_shape,
+        input_shape=config.EMBEDDING_INPUT_SHAPE,
         pooling='avg'
     )
     return base
 
-def get_image_paths(directory):
-    valid_exts = (".jpg", ".jpeg", ".png", ".bmp")
-    return [
-        os.path.join(directory, f) for f in os.listdir(directory)
-        if f.lower().endswith(valid_exts)
-    ]
-
-def generate_embeddings_from_directory(model, directory, batch_size=32, preprocess_mode=None):
+def extract_features_from_list(model, image_paths):
     """
-    Generates embeddings. If preprocess_mode is None, it tries to detect 
-    the correct mode from all_config or defaults to MobileNetV2.
+    Generates embeddings from a specific list of image paths.
+    This avoids redundant directory scouring.
     """
-    paths = get_image_paths(directory)
-    if not paths:
-        print(f"⚠️ No images found in {directory}")
+    if not image_paths:
         return np.array([])
 
-    # Resolve preprocessing mode
-    mode = preprocess_mode or (all_config.EMBEDDING_MODEL_TYPE if all_config else "MobileNetV2")
-    
-    if mode in MODEL_FACTORY:
-        preprocess_func = MODEL_FACTORY[mode]["preprocess"]
-    else:
-        print(f"⚠️ Preprocess mode '{mode}' unknown. Using identity (no scaling).")
-        preprocess_func = lambda x: x
-
-    target_size = model.input_shape[1:3]
     all_embeddings = []
+    target_h, target_w = config.EMBEDDING_INPUT_SHAPE[:2]
+    preprocess_func = MODEL_FACTORY[config.EMBEDDING_MODEL_TYPE]["preprocess"]
 
-    for i in range(0, len(paths), batch_size):
-        batch_paths = paths[i : i + batch_size]
-        batch_tensors = []
+    print(f"🚀 Generating embeddings for {len(image_paths)} images...")
+    
+    for i in range(0, len(image_paths), BATCH_SIZE):
+        batch_paths = image_paths[i:i + BATCH_SIZE]
+        batch_imgs = []
         
-        for p in batch_paths:
+        for img_path in batch_paths:
             try:
-                img = image.load_img(p, target_size=target_size)
+                img = image.load_img(img_path, target_size=(target_h, target_w))
                 img_array = image.img_to_array(img)
-                batch_tensors.append(img_array)
-            except Exception as e:
+                batch_imgs.append(img_array)
+            except Exception:
                 continue
-
-        if not batch_tensors:
+        
+        if not batch_imgs:
             continue
 
-        x = np.array(batch_tensors)
-        x = preprocess_func(x)
+        batch_array = np.array(batch_imgs)
+        preprocessed_batch = preprocess_func(batch_array)
         
-        preds = model.predict(x, verbose=0)
-        all_embeddings.append(preds)
+        features = model.predict(preprocessed_batch, verbose=0)
+        all_embeddings.append(features)
 
-    return np.vstack(all_embeddings) if all_embeddings else np.array([])
+    if not all_embeddings:
+        return np.array([])
+        
+    return np.vstack(all_embeddings)
+
+def extract_features(model, directory):
+    """
+    Legacy/Convenience wrapper that discovers files and extracts features.
+    """
+    image_paths = get_recursive_image_paths(directory)
+    return extract_features_from_list(model, image_paths)
