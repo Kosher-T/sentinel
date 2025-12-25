@@ -8,6 +8,12 @@ from keras.applications.vgg16 import VGG16, preprocess_input as vgg_preprocess
 from keras.applications.resnet50 import ResNet50, preprocess_input as resnet_preprocess
 import all_config
 
+# Import your central configuration
+try:
+    import all_config
+except ImportError:
+    all_config = None
+
 # Factory for standard architectures
 MODEL_FACTORY = {
     "MobileNetV2": {"class": MobileNetV2, "preprocess": mobile_preprocess},
