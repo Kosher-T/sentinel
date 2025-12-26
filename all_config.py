@@ -26,8 +26,8 @@ INCOMING_DATA_PATH = BASE_DATA_DIR / "data_drift" / "incoming_data"
 
 # --- MONITORING ROOTS ---
 # Centralized locations for persistence and logs
-MODEL_DECAY_ROOT = PROJECT_ROOT / "data" / "monitoring" / "decay"
-DRIFT_MONITOR_ROOT = PROJECT_ROOT / "data" / "monitoring" / "drift"
+MODEL_DECAY_ROOT = PROJECT_ROOT / "data" / "model_decay"
+DRIFT_MONITOR_ROOT = PROJECT_ROOT / "data" / "data_drift"
 
 # --- MODEL PATHS ---
 # Directories where the latest 'Fresh' and 'Old' models are stored for decay comparison
@@ -41,8 +41,8 @@ FRESH_MODEL_PATH = DATA_PATH / "fresh_model"
 
 # --- RESULTS & EMBEDDINGS (DECAY PIPELINE) ---
 # Intermediate outputs for the decay pipeline
-FRESH_RESULTS_DIR = MODEL_DECAY_ROOT / "results" / "fresh"
-OLD_RESULTS_DIR = MODEL_DECAY_ROOT / "results" / "old"
+FRESH_RESULTS_DIR = MODEL_DECAY_ROOT / "fresh_model_results"
+OLD_RESULTS_DIR = MODEL_DECAY_ROOT / "old_model_results"
 EMBEDDINGS_ROOT = MODEL_DECAY_ROOT / "embeddings"
 
 # --- DRIFT & DECAY THRESHOLDS ---
