@@ -253,7 +253,7 @@ def run_analysis():
             # 3. Calculate detailed stats for breakdown
             n_comp = min(16, f_emb.shape[0], f_emb.shape[1])
             pca = PCA(n_components=n_comp, svd_solver='full', random_state=42)
-            b_pca = pca.fit_transform(f_emb) 
+            b_pca = pca.fit_transform(f_emb)
             c_pca = pca.transform(o_emb)
 
             avg_wd = np.mean([wasserstein_distance(b_pca[:, i], c_pca[:, i]) for i in range(b_pca.shape[1])])
