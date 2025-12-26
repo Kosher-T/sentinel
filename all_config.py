@@ -16,8 +16,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 # --- DATA SOURCE PATHS (THE GOLDEN SET) ---
 # The 'Golden Set' is the ground-truth benchmark for model performance
-GOLDEN_SET_DIR = PROJECT_ROOT / "data" / "golden_set_septuplets"
 BASE_DATA_DIR = PROJECT_ROOT / "data"
+GOLDEN_SET_DIR = BASE_DATA_DIR / "golden_set_septuplets"
 
 # --- DRIFT SPECIFIC PATHS ---
 # Where original training data and incoming production data are stored
@@ -31,12 +31,13 @@ DRIFT_MONITOR_ROOT = PROJECT_ROOT / "data" / "monitoring" / "drift"
 
 # --- MODEL PATHS ---
 # Directories where the latest 'Fresh' and 'Old' models are stored for decay comparison
-OLD_MODEL_DIR = PROJECT_ROOT / "models" / "old_model"
-FRESH_MODEL_DIR = PROJECT_ROOT / "models" / "fresh_model"
+DATA_PATH = PROJECT_ROOT / "data" / "golden_set_septuplets" / "models"
+OLD_MODEL_PATH = DATA_PATH / "old_model"
+FRESH_MODEL_PATH = DATA_PATH / "fresh_model"
 
 # Specific fallback paths for legacy scripts
-OLD_MODEL_PATH = OLD_MODEL_DIR / "vfi_model_old.keras"
-FRESH_MODEL_PATH = FRESH_MODEL_DIR / "vfi_model_fresh.keras"
+# OLD_MODEL_PATH = OLD_MODEL_DIR / "vfi_model_old.keras"
+# FRESH_MODEL_PATH = FRESH_MODEL_DIR / "vfi_model_fresh.keras"
 
 # --- RESULTS & EMBEDDINGS (DECAY PIPELINE) ---
 # Intermediate outputs for the decay pipeline
