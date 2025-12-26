@@ -2,10 +2,9 @@ venv/
 __pycache__/
 
 data/model_decay/
-data/data_drift/original_dataset/
-data/data_drift/incoming_data/
-data/golden_set_septuplets/
-data/
+data/data_drift
+
+
 one_time_tool.py
 
 
