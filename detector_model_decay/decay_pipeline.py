@@ -257,7 +257,7 @@ def run_analysis():
             c_pca = pca.transform(o_emb)
 
             avg_wd = np.mean([wasserstein_distance(b_pca[:, i], c_pca[:, i]) for i in range(b_pca.shape[1])])
-            avg_kl = np.mean([kl_divergence(b_pca[:, i], c_pca[:, i]) for i in range(b_pca.shape[1])])
+            avg_kl = np.mean([kl_divergence(b_pca[:, i], c_pca[:, i]) for i in range(b_pca.shape[1])])  # type:ignore
             
             b_centroid = np.mean(f_emb, axis=0).reshape(1, -1)
             c_centroid = np.mean(o_emb, axis=0).reshape(1, -1)
@@ -298,8 +298,8 @@ def run_analysis():
     print(f"Backbone:          {backbone}")
     print(f"Overall Status:    {overall_status}")
     print("--------------------------------------------------")
-    print(f"Baseline Samples:  {results.get('Interpolation', results.get('Prediction'))['samples']}")
-    print(f"Incoming Samples:  {results.get('Interpolation', results.get('Prediction'))['samples']}")
+    print(f"Baseline Samples:  {results.get('Interpolation', results.get('Prediction'))['samples']}")  # type: ignore
+    print(f"Incoming Samples:  {results.get('Interpolation', results.get('Prediction'))['samples']}")  # type: ignore
     print("--------------------------------------------------")
     print("FINAL DRIFT SCORE")
     for task_name, r in results.items():
