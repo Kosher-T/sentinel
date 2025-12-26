@@ -1,28 +1,27 @@
-# Use a clean Python image to avoid conflicts with pre-installed libraries
-FROM python:3.9-slim
+# Use a slim Python image with ML support
+FROM python:3.10-slim
 
-# Set the working directory inside the container
-WORKDIR /app
-
-# 1. Install system dependencies for OpenCV
+# Install system dependencies for OpenCV and SQLite
 RUN apt-get update && apt-get install -y \
-    libgl1 \
-    libsm6 \
-    libxext6 \
+    libgl1-mesa-glx \
     libglib2.0-0 \
+    sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. Install Python dependencies
+# Set working directory
+WORKDIR /app
+
+# Copy requirements and install
+# Note: You should create a requirements.txt with:
+# tensorflow, keras, numpy, opencv-python, scikit-image, scikit-learn, pandas, streamlit, scipy
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 3. Copy the entire package directory to preserve module structure
-# This ensures detector_data_drift/ is a valid python package
-COPY detector_data_drift/ ./detector_data_drift/
+# Copy the entire project
+COPY . .
 
-# 4. Create placeholder directories for volume mounting
-RUN mkdir -p /app/incoming_data /app/status_output
+# Set PYTHONPATH to the current directory so internal imports work
+ENV PYTHONPATH=/app
 
-# 5. Set the entrypoint
-# We run the script using the module path so Python handles imports correctly
-ENTRYPOINT ["python", "detector_data_drift/monitoring_service.py"]
+# Default command is overridden by docker-compose
+CMD ["python", "sentinel_watch.py"]
