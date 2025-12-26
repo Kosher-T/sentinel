@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  sentinel-watch:
+    build: .
+    volumes:
+      - .:/app
+      # MUNCHKIN: Mount your WSL venv directly into the container
+      # This assumes your venv is named 'venv' and is in the project root
+      # This skips the 'pip install' download phase inside the container
+      - ./venv/lib/python3.10/site-packages:/usr/local/lib/python3.10/site-packages
+    environment:
+      - PYTHONPATH=/app
+      - CUDA_VISIBLE_DEVICES=-1
+    command: /bin/sh -c "while true; do python sentinel_watch.py; sleep 21600; done"
+
+  dashboard:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/app
+      - ./venv/lib/python3.10/site-packages:/usr/local/lib/python3.10/site-packages
+    command: streamlit run dashboard.py --server.port=8501 --server.address=0.0.0.0
