@@ -1,5 +1,5 @@
 # This module defines the parameters for the VFI model being monitored.
-# If you switch backbones (e.g., from MobileNetV2 to VGG16), update this file.
+# If you want to switch backbones (e.g., from MobileNetV2 to VGG16), update this file.
 
 from pathlib import Path
 import os
@@ -23,6 +23,7 @@ GOLDEN_SET_DIR = BASE_DATA_DIR / "golden_set_septuplets"
 # Where original training data and incoming production data are stored
 ORIGINAL_DATA_PATH = BASE_DATA_DIR / "data_drift" / "original_dataset"
 INCOMING_DATA_PATH = BASE_DATA_DIR / "data_drift" / "incoming_data"
+ARCHIVED_DATA_PATH = BASE_DATA_DIR / "data_drift" / "history" # New: for archiving processed data
 
 # --- MONITORING ROOTS ---
 # Centralized locations for persistence and logs
@@ -53,9 +54,10 @@ DRIFT_THRESHOLD = 7.0  # % distance limit for incoming production data
 MONITOR_SCHEDULE = "0 */6 * * *" # Cron: Every 6 hours
 RETRAIN_TRIGGER_COUNT = 5       # Consecutive fails required to trigger an automated retrain
 DRIFT_FAILURE_RATIO = 0.6       # 60% failure in recent window triggers system alert
+TIMEFRAME_WINDOW = 5            # Number of past timeframes to consider for the failure ratio
 
 # --- DATABASE & LOGGING (For Dashboard & Persistence) ---
-DRIFT_HISTORY_DB = DRIFT_MONITOR_ROOT / "drift_history.json"
+DRIFT_HISTORY_DB = DRIFT_MONITOR_ROOT / "drift_history.db" # Updated to .db to match dashboard
 RETRAIN_LOG = DRIFT_MONITOR_ROOT / "retrain_events.json"
 MODEL_HISTORY_FILE = MODEL_DECAY_ROOT / "model_run_history.json"
 
