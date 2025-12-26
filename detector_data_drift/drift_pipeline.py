@@ -55,10 +55,13 @@ def print_drift_report(score, metrics_breakdown, num_baseline, num_incoming):
         print("\n[!] WARNING: Significant distribution shift detected.")
         print("    Consider retraining or investigating data source integrity.")
     print("="*50 + "\n")
+    
+    return status
 
 def run_drift_check(incoming_path=None):
     """
     Orchestrates discovery, caching, extraction, and analysis.
+    Returns: (drift_score, status) or (None, "ERROR")
     """
     ensure_dirs()
     incoming_path = incoming_path or config.INCOMING_DATA_PATH
@@ -73,7 +76,7 @@ def run_drift_check(incoming_path=None):
 
     if not baseline_files or not incoming_files:
         print(f"\n❌ Error: Missing images. Baseline: {len(baseline_files)}, Incoming: {len(incoming_files)}")
-        return
+        return None, "ERROR"
 
     baseline_emb = None
     incoming_emb = None
@@ -100,14 +103,15 @@ def run_drift_check(incoming_path=None):
         run_incoming = True
         if INCOMING_CACHE.exists():
             print(f"\n📦 Found cached incoming embeddings at {INCOMING_CACHE.name}.")
-            choice = input("❓ Incoming cache exists. Re-run feature extraction? (y/N): ").lower()
-            if choice != 'y':
-                incoming_emb = np.load(INCOMING_CACHE)
-                if len(incoming_emb) != len(incoming_files):
-                    print("⚠️  Cache mismatch (count). Forcing re-extraction...")
-                    run_incoming = True
-                else:
-                    run_incoming = False
+            # For automation (Sentinel Watch), we usually want to force fresh extraction 
+            # if we know data changed, but here we assume the cache logic holds.
+            # In a real scheduled run, you might force this.
+            incoming_emb = np.load(INCOMING_CACHE)
+            if len(incoming_emb) != len(incoming_files):
+                print("⚠️  Cache mismatch (count). Forcing re-extraction...")
+                run_incoming = True
+            else:
+                run_incoming = False
             
         if run_incoming:
             if model is None: model = detector.create_embedding_model()
@@ -121,12 +125,15 @@ def run_drift_check(incoming_path=None):
         drift_prob, metrics_breakdown = analyzer.analyze_drift(baseline_emb, incoming_emb)
         
         final_percentage = drift_prob * 100
-        print_drift_report(final_percentage, metrics_breakdown, len(baseline_files), len(incoming_files))
+        status = print_drift_report(final_percentage, metrics_breakdown, len(baseline_files), len(incoming_files))
         
         keras.backend.clear_session()
         
+        return final_percentage, status
+        
     except Exception as e:
         print(f"\n❌ Analysis failed: {e}")
+        return None, "ERROR"
 
 if __name__ == "__main__":
     path_arg = sys.argv[1] if len(sys.argv) > 1 else None
