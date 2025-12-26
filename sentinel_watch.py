@@ -6,18 +6,16 @@ import time
 from datetime import datetime
 from pathlib import Path
 import logging
+import all_config as config
 
-# Ensure project root is in path
-file_path = Path(__file__).resolve()
-project_root = file_path.parent.parent
+project_root = config.PROJECT_ROOT
 if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
+    sys.path.insert(0, str(project_root))
 
 # Internal Imports
-import all_config as config
 import detector_data_drift.drift_pipeline as drift_pipeline
 import detector_model_decay.decay_analyzer as decay_analyzer
-import detector_data_drift.feature_extractor as detector # Assuming this exists based on drift_pipeline
+import detector_data_drift.feature_extractor as detector
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] SENTINEL: %(message)s')
