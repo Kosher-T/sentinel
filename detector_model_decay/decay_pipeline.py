@@ -334,21 +334,37 @@ if __name__ == "__main__":
 
     # 1. Fresh Model Logic
     fresh_changed = meta_mgr.has_model_changed("fresh_model", fresh_path)
-    fresh_m = load_vfi_model(fresh_path)
-    if fresh_m:
-        run_vfi_inference(fresh_m, config.FRESH_RESULTS_DIR, "Fresh Model", force=fresh_changed)
-        meta_mgr.update_entry("fresh_model", fresh_path)
-        extract_embeddings(config.FRESH_RESULTS_DIR, "fresh_model", force=fresh_changed)
-        del fresh_m
-        keras.backend.clear_session()
+    # Check if embeddings already exist for fresh model
+    fresh_emb_im4 = config.EMBEDDINGS_ROOT / "fresh_model" / "im4_embeddings.npy"
+    fresh_emb_im7 = config.EMBEDDINGS_ROOT / "fresh_model" / "im7_embeddings.npy"
+    fresh_missing = not (fresh_emb_im4.exists() and fresh_emb_im7.exists())
+
+    if fresh_changed or fresh_missing:
+        fresh_m = load_vfi_model(fresh_path)
+        if fresh_m:
+            run_vfi_inference(fresh_m, config.FRESH_RESULTS_DIR, "Fresh Model", force=fresh_changed)
+            meta_mgr.update_entry("fresh_model", fresh_path)
+            extract_embeddings(config.FRESH_RESULTS_DIR, "fresh_model", force=fresh_changed)
+            del fresh_m
+            keras.backend.clear_session()
+    else:
+        print("✅ Fresh Model embeddings found. Skipping inference and extraction.")
 
     # 2. Old Model Logic
     print("\n" + "-"*30)
     old_changed = meta_mgr.has_model_changed("old_model", old_path)
     
+    # Check if embeddings already exist for old model
+    old_emb_im4 = config.EMBEDDINGS_ROOT / "old_model" / "im4_embeddings.npy"
+    old_emb_im7 = config.EMBEDDINGS_ROOT / "old_model" / "im7_embeddings.npy"
+    old_missing = not (old_emb_im4.exists() and old_emb_im7.exists())
+    
     should_run_old = False
-    if old_changed:
-        print("⚡ New model detected for 'Old Model' role. Auto-triggering inference.")
+    if old_changed or old_missing:
+        if old_changed:
+            print("⚡ New model detected for 'Old Model' role. Auto-triggering inference.")
+        else:
+            print("⚠️ Old Model embeddings missing. Triggering inference.")
         should_run_old = True
     else:
         user_choice = input("🔄 Old Model matches history. Re-run anyway? (y/n) [n]: ").lower()
@@ -364,6 +380,6 @@ if __name__ == "__main__":
             del old_m
             keras.backend.clear_session()
     else:
-        extract_embeddings(config.OLD_RESULTS_DIR, "old_model", force=False)
+        print("✅ Old Model embeddings found. Skipping inference and extraction.")
 
     run_analysis()
