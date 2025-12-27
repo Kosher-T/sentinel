@@ -5,8 +5,8 @@
 
 
 import os
-import numpy as np
 import sys
+import numpy as np
 import cv2
 import keras
 import platform
@@ -15,8 +15,24 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
-import feature_extractor as extractor
+
+# 1. Setup paths and handle project root for imports IMMEDIATELY
+# This must happen before any internal module or config imports
+file_path = Path(__file__).resolve()
+project_root = file_path.parent.parent
+
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
+
+# 2. Internal Module Imports
+# Import feature_extractor from the same directory as this script
+try:
+    import feature_extractor as extractor
+except ImportError:
+    from . import feature_extractor as extractor
+
 # Updated import to include statistical analysis for the detailed report
+# Using the absolute path logic to ensure accuracy inside Docker
 from detector_model_decay.decay_analyzer import (
     calculate_decay_score, 
     calculate_visual_metrics, 
@@ -27,12 +43,6 @@ from detector_model_decay.decay_analyzer import (
     cosine_similarity,
     PCA
 )
-
-file_path = Path(__file__).resolve()
-project_root = file_path.parent.parent
-
-if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
 
 import all_config as config
 
