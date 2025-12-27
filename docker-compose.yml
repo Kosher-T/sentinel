@@ -5,14 +5,14 @@ services:
     build: .
     volumes:
       - .:/app
-      # MUNCHKIN: Mount your WSL venv directly into the container
-      # This assumes your venv is named 'venv' and is in the project root
-      # This skips the 'pip install' download phase inside the container
-      - ./venv/lib/python3.10/site-packages:/usr/local/lib/python3.10/site-packages
+      # MUNCHKIN: Mount your WSL venv directly into the container.
+      # Ensure 'python3.12' matches your WSL version (check via 'python3 --version')
+      - ./venv/lib/python3.12/site-packages:/usr/local/lib/python3.12/site-packages
     environment:
-      - PYTHONPATH=/app
+      - PYTHONPATH=/app:/usr/local/lib/python3.12/site-packages
       - CUDA_VISIBLE_DEVICES=-1
-    command: /bin/sh -c "while true; do python sentinel_watch.py; sleep 21600; done"
+    # Changed to 'python -u' to ensure it finds the modules in the mounted site-packages
+    command: /bin/sh -c "while true; do python -u sentinel_watch.py; sleep 21600; done"
 
   dashboard:
     build: .
@@ -20,5 +20,9 @@ services:
       - "8501:8501"
     volumes:
       - .:/app
-      - ./venv/lib/python3.10/site-packages:/usr/local/lib/python3.10/site-packages
-    command: streamlit run dashboard.py --server.port=8501 --server.address=0.0.0.0
+      - ./venv/lib/python3.12/site-packages:/usr/local/lib/python3.12/site-packages
+    environment:
+      - PYTHONPATH=/app:/usr/local/lib/python3.12/site-packages
+    # MUNCHKIN FIX: Use 'python -m streamlit' instead of just 'streamlit'
+    # This forces python to find the streamlit module in the mounted volumes
+    command: python -m streamlit run dashboard.py --server.port=8501 --server.address=0.0.0.0
