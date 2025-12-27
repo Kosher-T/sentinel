@@ -28,21 +28,10 @@ if str(project_root) not in sys.path:
 # Import feature_extractor from the same directory as this script
 try:
     import feature_extractor as extractor
+    import decay_analyzer as analyzer
 except ImportError:
     from . import feature_extractor as extractor
-
-# Updated import to include statistical analysis for the detailed report
-# Using the absolute path logic to ensure accuracy inside Docker
-from detector_model_decay.decay_analyzer import (
-    calculate_decay_score, 
-    calculate_visual_metrics, 
-    analyze_statistical_drift,
-    kl_divergence,
-    mmd_linear,
-    wasserstein_distance,
-    cosine_similarity,
-    PCA
-)
+    from . import decay_analyzer as analyzer
 
 import all_config as config
 
@@ -254,7 +243,7 @@ def run_analysis():
                     im1 = cv2.imread(str(img_f_path))
                     im2 = cv2.imread(str(img_o_path))
                     if im1 is not None and im2 is not None:
-                        p, sm = calculate_visual_metrics(im1, im2)
+                        p, sm = analyzer.calculate_visual_metrics(im1, im2)
                         psnrs.append(p); ssims.append(sm)
             
             avg_p = np.mean(psnrs) if psnrs else 0
@@ -262,21 +251,21 @@ def run_analysis():
 
             # 3. Calculate detailed stats for breakdown
             n_comp = min(16, f_emb.shape[0], f_emb.shape[1])
-            pca = PCA(n_components=n_comp, svd_solver='full', random_state=42)
+            pca = analyzer.PCA(n_components=n_comp, svd_solver='full', random_state=42)
             b_pca = pca.fit_transform(f_emb)
             c_pca = pca.transform(o_emb)
 
-            avg_wd = np.mean([wasserstein_distance(b_pca[:, i], c_pca[:, i]) for i in range(b_pca.shape[1])])
-            avg_kl = np.mean([kl_divergence(b_pca[:, i], c_pca[:, i]) for i in range(b_pca.shape[1])])  # type:ignore
+            avg_wd = np.mean([analyzer.wasserstein_distance(b_pca[:, i], c_pca[:, i]) for i in range(b_pca.shape[1])])
+            avg_kl = np.mean([analyzer.kl_divergence(b_pca[:, i], c_pca[:, i]) for i in range(b_pca.shape[1])])  # type:ignore
             
             b_centroid = np.mean(f_emb, axis=0).reshape(1, -1)
             c_centroid = np.mean(o_emb, axis=0).reshape(1, -1)
-            cos_dist = 1 - cosine_similarity(b_centroid, c_centroid)[0][0]
+            cos_dist = 1 - analyzer.cosine_similarity(b_centroid, c_centroid)[0][0]
             
-            mmd_val = mmd_linear(f_emb, o_emb)
+            mmd_val = analyzer.mmd_linear(f_emb, o_emb)
 
             # 4. Aggregated Score
-            score = calculate_decay_score(f_emb, o_emb, avg_p, avg_s, task=task)
+            score = analyzer.calculate_decay_score(f_emb, o_emb, avg_p, avg_s, task=task)
             
             # Store in results dict
             task_key = "Interpolation" if task == "im4" else "Prediction"
