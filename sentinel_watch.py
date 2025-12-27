@@ -78,9 +78,15 @@ class SentinelWatch:
         
         logging.info(f"🗄️  Archiving incoming data to {dest_dir}...")
         
-        # In a real scenario, we move files. Here we simulate or copy.
-        # shutil.copytree(config.INCOMING_DATA_PATH, dest_dir, dirs_exist_ok=True)
-        # logging.info("   -> Archive complete.")
+        # Activated copying logic to ensure history is populated
+        try:
+            if config.INCOMING_DATA_PATH.exists():
+                shutil.copytree(config.INCOMING_DATA_PATH, dest_dir, dirs_exist_ok=True)
+                logging.info("   -> Archive complete.")
+            else:
+                logging.warning(f"   -> No data found in {config.INCOMING_DATA_PATH} to archive.")
+        except Exception as e:
+            logging.error(f"   -> Archive failed: {e}")
 
     # --- CORE PIPELINES ---
 
@@ -187,13 +193,15 @@ class SentinelWatch:
         # 2. Record Result
         self.record_drift_result(drift_score, status)
 
-        # 3. Check Logic
+        # 3. Archive incoming data immediately after check
+        self.archive_incoming_data()
+
+        # 4. Check Logic
         is_triggered, fails, total = self.check_drift_history()
         
         if status == "PASS":
             if not is_triggered:
-                logging.info("✅ Drift Status: OK. Archiving data and sleeping.")
-                self.archive_incoming_data()
+                logging.info("✅ Drift Status: OK. Sleeping.")
                 return
             else:
                 logging.warning(f"⚠️ Current result PASS, but history shows instability ({fails}/{total} fails). Proceeding with caution (or could trigger check).")
@@ -204,13 +212,13 @@ class SentinelWatch:
         logging.warning(f"⚠️ Drift Detected. Historical Window: {fails}/{total} failures.")
 
         if is_triggered:
-            # 4. Trigger Retraining Loop
+            # 5. Trigger Retraining Loop
             logging.info("--- STEP 2: TRIGGER RETRAINING ---")
             self.simulate_alert("WARNING", f"Drift threshold exceeded ({fails}/{total} in window). Initiating Retraining.")
             
             challenger_model = self.simulate_retraining(config.ORIGINAL_DATA_PATH, config.INCOMING_DATA_PATH)
             
-            # 5. Run Decay Check
+            # 6. Run Decay Check
             logging.info("--- STEP 3: DECAY CHECK (GATEKEEPER) ---")
             decay_passed = self.run_decay_pipeline(challenger_model)
             
