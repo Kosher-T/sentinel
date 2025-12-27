@@ -1,9 +1,8 @@
-# Use a slim Python image to keep the base layer light
-FROM python:3.10-slim
+# MUNCHKIN FIX: Changed from 3.10-slim to 3.12-slim to match WSL venv
+# This prevents C-extension (NumPy) mismatch errors.
+FROM python:3.12-slim
 
 # Install system-level dependencies for OpenCV and image processing
-# Updated for compatibility with modern Debian-based images
-# Added --fix-missing and --no-install-recommends to handle flaky network (ISP interception)
 RUN apt-get update && apt-get install -y --fix-missing --no-install-recommends \
     libgl1 \
     libsm6 \
@@ -16,6 +15,4 @@ WORKDIR /app
 
 # We do NOT run 'pip install' here. 
 # Instead, the docker-compose.yml will mount your local WSL 'site-packages'.
-# This effectively uses your local venv as the container's library.
-
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app:/usr/local/lib/python3.12/site-packages
