@@ -1,11 +1,9 @@
 venv/
+.venv/
 __pycache__/
 
 data/model_decay/
 data/data_drift
-
-
-one_time_tool.py
 
 
 *.7z
