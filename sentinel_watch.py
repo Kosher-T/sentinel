@@ -32,8 +32,16 @@ class SentinelWatch:
             
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
+        # Added data_path column to track the folder in history
         c.execute('''CREATE TABLE IF NOT EXISTS drift_logs
-                     (timestamp TEXT, drift_score REAL, status TEXT, threshold REAL)''')
+                     (timestamp TEXT, drift_score REAL, status TEXT, threshold REAL, data_path TEXT)''')
+        
+        # Migration: Check if data_path exists, if not, add it (for existing DBs)
+        c.execute("PRAGMA table_info(drift_logs)")
+        columns = [column[1] for column in c.fetchall()]
+        if 'data_path' not in columns:
+            c.execute("ALTER TABLE drift_logs ADD COLUMN data_path TEXT")
+            
         conn.commit()
         conn.close()
 
@@ -49,20 +57,12 @@ class SentinelWatch:
         Levels: INFO, WARNING, CRITICAL
         """
         print(f"\n🚨 [ALERT - {level}] {message}\n")
-        # In prod: Send Slack/Email/PagerDuty notification
 
     def simulate_retraining(self, original_data, new_data_folder):
-        """
-        Simulates the retraining of the 'Challenger' model.
-        Returns path to the new model artifact.
-        """
         logging.info("🛠️  Starting Retraining Loop (Challenger Model)...")
         logging.info(f"   -> Mixing {original_data} + {new_data_folder}")
-        time.sleep(3) # Simulate training time
-        
-        # Simulate producing a new model artifact
+        time.sleep(3) 
         new_model_path = config.DATA_PATH / "challenger_model_v2.keras"
-        # In reality, this would actually run a training script
         return new_model_path
 
     def simulate_deployment(self, new_model_path):
@@ -70,45 +70,47 @@ class SentinelWatch:
         time.sleep(2)
         logging.info("✅ Deployment Complete. New model is live.")
 
-    def archive_incoming_data(self):
-        """Moves processed incoming data to history."""
+    def archive_incoming_data(self, score, status):
+        """
+        Moves processed incoming data to history with a recognizable name.
+        Naming Convention: YYYYMMDD_HHMMSS_[STATUS]_[SCORE]%
+        """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        dest_dir = config.ARCHIVED_DATA_PATH / timestamp
+        # Human-recognizable folder name showing drift status and score
+        folder_name = f"{timestamp}_{status}_{score:.2f}pct"
+        dest_dir = config.ARCHIVED_DATA_PATH / folder_name
         dest_dir.mkdir(parents=True, exist_ok=True)
         
         logging.info(f"🗄️  Archiving incoming data to {dest_dir}...")
         
-        # Activated copying logic to ensure history is populated
         try:
             if config.INCOMING_DATA_PATH.exists():
                 shutil.copytree(config.INCOMING_DATA_PATH, dest_dir, dirs_exist_ok=True)
-                logging.info("   -> Archive complete.")
+                logging.info(f"   -> Data archived successfully as {status}.")
+                return str(dest_dir)
             else:
                 logging.warning(f"   -> No data found in {config.INCOMING_DATA_PATH} to archive.")
+                return None
         except Exception as e:
             logging.error(f"   -> Archive failed: {e}")
+            return None
 
     # --- CORE PIPELINES ---
 
-    def record_drift_result(self, score, status):
-        """Writes the drift result to the database."""
+    def record_drift_result(self, score, status, folder_path=None):
+        """Writes the drift result and the path to its corresponding data to the database."""
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        c.execute("INSERT INTO drift_logs (timestamp, drift_score, status, threshold) VALUES (?, ?, ?, ?)",
-                  (timestamp, score, status, config.DRIFT_THRESHOLD))
+        c.execute("INSERT INTO drift_logs (timestamp, drift_score, status, threshold, data_path) VALUES (?, ?, ?, ?, ?)",
+                  (timestamp, score, status, config.DRIFT_THRESHOLD, folder_path))
         conn.commit()
         conn.close()
-        logging.info(f"📝 Result recorded: {status} ({score:.2f}%)")
+        logging.info(f"📝 Result recorded: {status} ({score:.2f}%) mapped to {folder_path}")
 
     def check_drift_history(self):
-        """
-        Checks the failure rate in the configured window.
-        Returns: (is_triggered, fail_count, total_count)
-        """
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
-        # Get the last N records
         c.execute("SELECT status FROM drift_logs ORDER BY timestamp DESC LIMIT ?", (config.TIMEFRAME_WINDOW,))
         rows = c.fetchall()
         conn.close()
@@ -120,50 +122,21 @@ class SentinelWatch:
         total = len(statuses)
         fails = statuses.count("FAIL")
         
-        # Check conditions
-        consecutive_fail = (fails == total) and (total == config.TIMEFRAME_WINDOW)
-        failure_ratio = (fails / total) >= config.DRIFT_FAILURE_RATIO
-        
-        is_triggered = consecutive_fail or failure_ratio
+        is_triggered = ((fails == total) and (total == config.TIMEFRAME_WINDOW)) or ((fails / total) >= config.DRIFT_FAILURE_RATIO)
         return is_triggered, fails, total
 
     def run_decay_pipeline(self, challenger_model_path):
-        """
-        The Decay Check (Gatekeeper).
-        Runs the Challenger model against the Golden Set and compares with the Old Model.
-        """
         logging.info("📉 Running Decay Pipeline (Gatekeeper Check)...")
-        
         try:
-            # 1. Load Models (Simulated for Sentinel if files don't exist, else use detector)
-            # In a real run, we would load the actual Keras models here.
-            # model_old = detector.load_model(config.OLD_MODEL_PATH)
-            # model_new = detector.load_model(challenger_model_path)
-            
-            # 2. Get Golden Set Images
             golden_files = detector.get_recursive_image_paths(config.GOLDEN_SET_DIR)
             if not golden_files:
                 logging.error("❌ Golden Set empty! Cannot verify decay.")
                 return False
 
             logging.info(f"   -> Testing on {len(golden_files)} Golden Set images.")
-
-            # 3. Feature Extraction (Simulated here to avoid heavy load in this script, 
-            #    or we call detector.extract_features if we want real execution)
             
-            # --- SIMULATION OF DECAY CHECK FOR SENTINEL LOGIC ---
-            # Ideally, we extract embeddings:
-            # old_emb = detector.extract_features_from_list(model_old, golden_files)
-            # new_emb = detector.extract_features_from_list(model_new, golden_files)
-            
-            # For this script's purpose, we will simulate the result based on randomness 
-            # or assume a "successful" retrain usually passes, but sometimes fails.
             import random
-            simulated_decay_score = random.uniform(0, 10.0) # 0 to 10% decay
-            
-            # Using decay_analyzer logic (just for the score calculation demonstration)
-            # score = decay_analyzer.calculate_decay_score(new_emb, old_emb)
-            
+            simulated_decay_score = random.uniform(0, 10.0) 
             logging.info(f"   -> Calculated Decay Score on Golden Set: {simulated_decay_score:.2f}%")
             
             if simulated_decay_score > config.DECAY_THRESHOLD:
@@ -182,7 +155,6 @@ class SentinelWatch:
     def watch(self):
         self.simulate_cloud_connection()
         
-        # 1. RUN Drift Pipeline
         logging.info("--- STEP 1: MONITOR DATA DRIFT ---")
         drift_score, status = drift_pipeline.run_drift_check()
         
@@ -190,35 +162,31 @@ class SentinelWatch:
             logging.error("Drift Pipeline returned no result.")
             return
 
-        # 2. Record Result
-        self.record_drift_result(drift_score, status)
+        # 1. Archive first to get the folder path with status-based naming
+        archived_path = self.archive_incoming_data(drift_score, status)
 
-        # 3. Archive incoming data immediately after check
-        self.archive_incoming_data()
+        # 2. Record Result with the mapping to the archive folder
+        self.record_drift_result(drift_score, status, archived_path)
 
-        # 4. Check Logic
+        # 3. Check Logic
         is_triggered, fails, total = self.check_drift_history()
         
         if status == "PASS":
             if not is_triggered:
-                logging.info("✅ Drift Status: OK. Sleeping.")
+                logging.info("✅ Drift Status: OK. Archiving and sleeping.")
                 return
             else:
-                logging.warning(f"⚠️ Current result PASS, but history shows instability ({fails}/{total} fails). Proceeding with caution (or could trigger check).")
-                # For now, we only trigger on confirmed failure trend.
+                logging.warning(f"⚠️ Current result PASS, but history shows instability ({fails}/{total} fails).")
                 return
 
-        # Status is FAIL
         logging.warning(f"⚠️ Drift Detected. Historical Window: {fails}/{total} failures.")
 
         if is_triggered:
-            # 5. Trigger Retraining Loop
             logging.info("--- STEP 2: TRIGGER RETRAINING ---")
             self.simulate_alert("WARNING", f"Drift threshold exceeded ({fails}/{total} in window). Initiating Retraining.")
             
             challenger_model = self.simulate_retraining(config.ORIGINAL_DATA_PATH, config.INCOMING_DATA_PATH)
             
-            # 6. Run Decay Check
             logging.info("--- STEP 3: DECAY CHECK (GATEKEEPER) ---")
             decay_passed = self.run_decay_pipeline(challenger_model)
             
@@ -227,12 +195,10 @@ class SentinelWatch:
                 self.simulate_alert("INFO", "Self-healing complete. New model deployed.")
             else:
                 logging.critical("STOP! Retrained model failed Decay Check.")
-                self.simulate_alert("CRITICAL", "Retrained model failed Decay Check. Deployment Aborted. Engineer intervention required.")
-                # Option i: Create copy, route data (Simulated log)
-                logging.info("-> [Fallback] Keeping old model for Standard Data. Routing New Data to secondary pipeline.")
+                self.simulate_alert("CRITICAL", "Retrained model failed Decay Check. Deployment Aborted.")
                 
         else:
-            logging.info("ℹ️  Drift detected but threshold (consecutive/ratio) not yet met. Recording and waiting.")
+            logging.info("ℹ️  Drift detected but threshold not yet met. Recorded and waiting.")
 
 if __name__ == "__main__":
     sentinel = SentinelWatch()
