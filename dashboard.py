@@ -5,6 +5,13 @@ import os
 import sys
 from pathlib import Path
 
+# --- PAGE CONFIG MUST BE FIRST ---
+st.set_page_config(
+    page_title="Sentinel Monitor",
+    page_icon="🛰️",
+    layout="wide"
+)
+
 # Setup paths to find all_config.py in the root
 file_path = Path(__file__).resolve()
 project_root = file_path.parent
@@ -13,46 +20,51 @@ if str(project_root) not in sys.path:
 
 import all_config as config
 
-# Page Config
-st.set_page_config(
-    page_title="Sentinel Monitor",
-    page_icon="🛰️",
-    layout="wide"
-)
-
-# Header
-st.title("🛰️ Sentinel: VFI Model Monitor")
-st.markdown("### Real-time Drift Detection & Self-Healing Log")
-
 # Path to the database from central config
 DB_PATH = config.DRIFT_HISTORY_DB
 
 def load_data():
     """Reads the sqlite database into a Pandas DataFrame."""
     if not os.path.exists(DB_PATH):
-        return pd.DataFrame() # Return empty if no data yet
+        return pd.DataFrame()
     
     try:
-        conn = sqlite3.connect(DB_PATH)
-        df = pd.read_sql_query("SELECT * FROM drift_logs", conn)
-        conn.close()
+        # Using a context manager for the connection to avoid locks
+        with sqlite3.connect(DB_PATH) as conn:
+            df = pd.read_sql_query("SELECT * FROM drift_logs", conn)
         
-        # Convert string timestamp to datetime object
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        if not df.empty:
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
         return df
     except Exception as e:
         st.error(f"Error reading database: {e}")
         return pd.DataFrame()
 
-# Auto-refresh logic
-if st.button('🔄 Refresh Data'):
-    st.rerun()
+# Header
+st.title("🛰️ Sentinel: VFI Model Monitor")
+st.markdown("### Real-time Drift Detection & Self-Healing Log")
 
+# Sidebar Status Area
+with st.sidebar:
+    st.header("System Status")
+    db_exists = os.path.exists(DB_PATH)
+    if db_exists:
+        st.success("✅ Database Connected")
+        st.caption(f"Path: {DB_PATH}")
+    else:
+        st.error("❌ Database Not Found")
+        st.caption(f"Searching: {DB_PATH}")
+    
+    if st.button('🔄 Refresh Dashboard'):
+        st.rerun()
+
+# Main Logic
 df = load_data()
 
 if df.empty:
-    st.warning(f"Waiting for data... Database not found or empty at: {DB_PATH}")
-    st.info("Ensure the Sentinel Watcher has completed at least one run to initialize the database.")
+    st.warning("Waiting for data...")
+    st.info(f"The dashboard is active, but the log file `{DB_PATH}` is empty or hasn't been created yet.")
+    st.image("https://via.placeholder.com/800x400.png?text=Waiting+for+Sentinel+Watch+to+generate+logs...", use_container_width=True)
 else:
     # 1. Top Level Metrics
     latest_run = df.iloc[-1]
@@ -63,12 +75,11 @@ else:
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        # Calculate margin (Higher score = worse, so positive delta if we are below threshold)
         margin = threshold - last_score
         st.metric(label="Latest Drift Score", value=f"{last_score:.2f}%", delta=f"{margin:.2f}% Margin")
     
     with col2:
-        st.markdown("**System Status**")
+        st.markdown("**Drift Status**")
         if last_status == "FAIL":
             st.error(f"🚨 {last_status}")
         else:
@@ -79,8 +90,6 @@ else:
 
     # 2. The Chart
     st.markdown("### 📉 Drift Trend Over Time")
-    
-    # Simple line chart using Streamlit's native component
     chart_data = df[['timestamp', 'drift_score']].set_index('timestamp')
     st.line_chart(chart_data)
 
@@ -90,4 +99,4 @@ else:
 
     # 4. System Info (Footer)
     st.divider()
-    st.caption(f"Connected to Sentinel Watcher | Database: {DB_PATH} | Backbone: {config.EMBEDDING_MODEL_TYPE}")
+    st.caption(f"Connected to Sentinel Watcher | Backbone: {config.EMBEDDING_MODEL_TYPE}")
