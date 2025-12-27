@@ -26,6 +26,8 @@ services:
       - ./venv/lib/python3.12/site-packages:/usr/local/lib/python3.12/site-packages
     environment:
       - PYTHONPATH=/app:/usr/local/lib/python3.12/site-packages
+    # MUNCHKIN FIX: Use 'python -m streamlit' and disable security checks for Docker
+    # This fixes the 'infinite loading' issue by allowing cross-origin requests from the host.
     command: >
       python -m streamlit run dashboard.py 
       --server.port=8501 
