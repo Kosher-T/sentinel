@@ -1,17 +1,21 @@
-# Use the same version as your WSL Python
+# Use a slim Python image to keep the base layer light
 FROM python:3.10-slim
 
-# Still need these system libs (usually small/cached)
-# If you've built this once, Docker will cache these forever locally.
-RUN apt-get update && apt-get install -y \
-    libgl1-mesa-glx \
+# Install system-level dependencies for OpenCV and image processing
+# Updated for compatibility with modern Debian-based images
+# Added --fix-missing and --no-install-recommends to handle flaky network (ISP interception)
+RUN apt-get update && apt-get install -y --fix-missing --no-install-recommends \
+    libgl1 \
+    libsm6 \
+    libxext6 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
+# Set the working directory
 WORKDIR /app
 
-# We skip COPY requirements.txt and RUN pip install
-# because we are mounting site-packages in docker-compose.yml
+# We do NOT run 'pip install' here. 
+# Instead, the docker-compose.yml will mount your local WSL 'site-packages'.
+# This effectively uses your local venv as the container's library.
 
 ENV PYTHONPATH=/app
-# The rest of the files are mounted via volume
