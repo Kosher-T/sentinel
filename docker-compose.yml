@@ -2,11 +2,14 @@ version: '3.8'
 
 services:
   sentinel-watch:
-    build: .
+    # Use the Dockerfile which we will ensure uses Python 3.12
+    build: 
+      context: .
+      dockerfile: Dockerfile
     volumes:
       - .:/app
       # MUNCHKIN: Mount your WSL venv directly into the container.
-      # Ensure 'python3.12' matches your WSL version (check via 'python3 --version')
+      # Verified: Using python3.12 to match your WSL venv exactly.
       - ./venv/lib/python3.12/site-packages:/usr/local/lib/python3.12/site-packages
     environment:
       - PYTHONPATH=/app:/usr/local/lib/python3.12/site-packages
@@ -15,7 +18,9 @@ services:
     command: /bin/sh -c "while true; do python -u sentinel_watch.py; sleep 21600; done"
 
   dashboard:
-    build: .
+    build: 
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8501:8501"
     volumes:
