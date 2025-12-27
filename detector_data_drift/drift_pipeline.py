@@ -5,7 +5,8 @@ import keras
 from datetime import datetime
 from pathlib import Path
 
-# 1. Setup paths and handle project root for imports
+# 1. Setup paths and handle project root for imports IMMEDIATELY
+# This must happen before importing internal modules like feature_extractor
 file_path = Path(__file__).resolve()
 project_root = file_path.parent.parent
 
@@ -13,8 +14,14 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 # Internal Sentinel Module Imports
-import feature_extractor as detector
-import data_analyzer as analyzer
+# Using relative imports or direct folder-level imports for local siblings
+try:
+    import feature_extractor as detector
+    import data_analyzer as analyzer
+except ImportError:
+    from . import feature_extractor as detector
+    from . import data_analyzer as analyzer
+
 import all_config as config
 
 # Define persistence path
