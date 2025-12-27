@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   sentinel-watch:
     # Use the Dockerfile which we will ensure uses Python 3.12
@@ -28,6 +26,10 @@ services:
       - ./venv/lib/python3.12/site-packages:/usr/local/lib/python3.12/site-packages
     environment:
       - PYTHONPATH=/app:/usr/local/lib/python3.12/site-packages
-    # MUNCHKIN FIX: Use 'python -m streamlit' instead of just 'streamlit'
-    # This forces python to find the streamlit module in the mounted volumes
-    command: python -m streamlit run dashboard.py --server.port=8501 --server.address=0.0.0.0
+    command: >
+      python -m streamlit run dashboard.py 
+      --server.port=8501 
+      --server.address=0.0.0.0 
+      --server.headless=true 
+      --server.enableCORS=false 
+      --server.enableXsrfProtection=false

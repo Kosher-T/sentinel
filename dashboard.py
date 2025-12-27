@@ -13,15 +13,18 @@ st.set_page_config(
 )
 
 # Setup paths to find all_config.py in the root
+# Using resolve().parent ensures we are looking at the actual project root
 file_path = Path(__file__).resolve()
 project_root = file_path.parent
 if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
+    sys.path.insert(0, str(project_root))
 
-import all_config as config
-
-# Path to the database from central config
-DB_PATH = config.DRIFT_HISTORY_DB
+try:
+    import all_config as config
+    DB_PATH = config.DRIFT_HISTORY_DB
+except ImportError:
+    # Fallback if config is not found during initial boot
+    DB_PATH = Path("data/data_drift/drift_history.db")
 
 def load_data():
     """Reads the sqlite database into a Pandas DataFrame."""
@@ -29,15 +32,16 @@ def load_data():
         return pd.DataFrame()
     
     try:
-        # Using a context manager for the connection to avoid locks
-        with sqlite3.connect(DB_PATH) as conn:
-            df = pd.read_sql_query("SELECT * FROM drift_logs", conn)
+        # Use URI mode for read-only to prevent locking issues with the watcher
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        df = pd.read_sql_query("SELECT * FROM drift_logs", conn)
+        conn.close()
         
         if not df.empty:
             df['timestamp'] = pd.to_datetime(df['timestamp'])
         return df
     except Exception as e:
-        st.error(f"Error reading database: {e}")
+        # Don't let a DB error crash the whole UI
         return pd.DataFrame()
 
 # Header
@@ -47,10 +51,8 @@ st.markdown("### Real-time Drift Detection & Self-Healing Log")
 # Sidebar Status Area
 with st.sidebar:
     st.header("System Status")
-    db_exists = os.path.exists(DB_PATH)
-    if db_exists:
+    if os.path.exists(DB_PATH):
         st.success("✅ Database Connected")
-        st.caption(f"Path: {DB_PATH}")
     else:
         st.error("❌ Database Not Found")
         st.caption(f"Searching: {DB_PATH}")
@@ -63,8 +65,8 @@ df = load_data()
 
 if df.empty:
     st.warning("Waiting for data...")
-    st.info(f"The dashboard is active, but the log file `{DB_PATH}` is empty or hasn't been created yet.")
-    st.image("https://via.placeholder.com/800x400.png?text=Waiting+for+Sentinel+Watch+to+generate+logs...", use_container_width=True)
+    st.info(f"The dashboard is active, but the log file is empty or hasn't been created yet.")
+    st.caption(f"Target Path: {DB_PATH}")
 else:
     # 1. Top Level Metrics
     latest_run = df.iloc[-1]
@@ -93,10 +95,9 @@ else:
     chart_data = df[['timestamp', 'drift_score']].set_index('timestamp')
     st.line_chart(chart_data)
 
-    # 3. The Raw Log (Dataframe)
+    # 3. Raw Log
     with st.expander("View Raw Logs"):
         st.dataframe(df.sort_values(by="timestamp", ascending=False), use_container_width=True)
 
-    # 4. System Info (Footer)
     st.divider()
-    st.caption(f"Connected to Sentinel Watcher | Backbone: {config.EMBEDDING_MODEL_TYPE}")
+    st.caption(f"Connected to Sentinel Watcher | Database: {DB_PATH}")
