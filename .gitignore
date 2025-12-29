@@ -3,7 +3,7 @@ venv/
 __pycache__/
 
 data/model_decay/
-data/data_drift
+data/data_drift/
 
 
 *.7z
