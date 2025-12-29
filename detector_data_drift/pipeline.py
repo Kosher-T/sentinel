@@ -16,11 +16,11 @@ if str(project_root) not in sys.path:
 # Internal Sentinel Module Imports
 # Using relative imports or direct folder-level imports for local siblings
 try:
-    import feature_extractor as detector
-    import data_analyzer as analyzer
+    import detector_data_drift.extractor as detector
+    import detector_data_drift.analyzer as analyzer
 except ImportError:
-    from . import feature_extractor as detector
-    from . import data_analyzer as analyzer
+    from . import extractor as detector
+    from . import analyzer as analyzer
 
 import all_config as config
 

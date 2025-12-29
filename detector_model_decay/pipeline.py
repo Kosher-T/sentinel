@@ -27,11 +27,11 @@ if str(project_root) not in sys.path:
 # 2. Internal Module Imports
 # Import feature_extractor from the same directory as this script
 try:
-    import feature_extractor as extractor
-    import decay_analyzer as analyzer
+    import detector_model_decay.extractor as extractor
+    import detector_model_decay.analyzer as analyzer
 except ImportError:
-    from . import feature_extractor as extractor
-    from . import decay_analyzer as analyzer
+    from . import extractor as extractor
+    from . import analyzer as analyzer
 
 import all_config as config
 
