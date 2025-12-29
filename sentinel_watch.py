@@ -13,9 +13,9 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 # Internal Imports
-import detector_data_drift.drift_pipeline as drift_pipeline
-import detector_model_decay.decay_analyzer as decay_analyzer
-import detector_data_drift.feature_extractor as detector
+import detector_data_drift.pipeline as pipeline
+import detector_model_decay.analyzer as analyzer
+import detector_data_drift.extractor as detector
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] SENTINEL: %(message)s')
@@ -156,7 +156,7 @@ class SentinelWatch:
         self.simulate_cloud_connection()
         
         logging.info("--- STEP 1: MONITOR DATA DRIFT ---")
-        drift_score, status = drift_pipeline.run_drift_check()
+        drift_score, status = pipeline.run_drift_check()
         
         if drift_score is None:
             logging.error("Drift Pipeline returned no result.")
