@@ -13,7 +13,7 @@ services:
       - PYTHONPATH=/app:/usr/local/lib/python3.12/site-packages
       - CUDA_VISIBLE_DEVICES=-1
     # Changed to 'python -u' to ensure it finds the modules in the mounted site-packages
-    command: /bin/sh -c "while true; do python -u sentinel_watch.py; sleep 21600; done"
+    command: /bin/sh -c "while true; do python -u sentinel_watch.py; sleep 15; done"
 
   dashboard:
     build: 
