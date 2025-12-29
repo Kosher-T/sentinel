@@ -13,7 +13,7 @@ services:
       - PYTHONPATH=/app:/usr/local/lib/python3.12/site-packages
       - CUDA_VISIBLE_DEVICES=-1
     # Changed to 'python -u' to ensure it finds the modules in the mounted site-packages
-    command: /bin/sh -c "while true; do python -u sentinel_watch.py; sleep 15; done"
+    command: /bin/sh -c "while true; do python -u sentinel_watch.py; sleep 180; done"
 
   dashboard:
     build: 
@@ -29,9 +29,4 @@ services:
     # MUNCHKIN FIX: Use 'python -m streamlit' and disable security checks for Docker
     # This fixes the 'infinite loading' issue by allowing cross-origin requests from the host.
     command: >
-      python -m streamlit run dashboard.py 
-      --server.port=8501 
-      --server.address=0.0.0.0 
-      --server.headless=true 
-      --server.enableCORS=false 
-      --server.enableXsrfProtection=false
+      python -m streamlit run dashboard.py
