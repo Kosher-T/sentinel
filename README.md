@@ -54,7 +54,7 @@ graph TD
         direction TB
         Champion[("🏆 Champion Model<br/>(Current Live Model)")]
         GoldenSet[("✨ Golden Set<br/>(Immutable Truth)")]
-        RefDist["Reference Distribution<br/>(Training Data Normals)"]
+        RefDist["Reference Distribution<br/>(Training Data Normals)<br/>+<br/>Training Facilities"]
     end
     class Champion,GoldenSet,RefDist setup
 
@@ -77,7 +77,7 @@ graph TD
     %% 4. Decay Check Phase
     subgraph Gatekeeper ["4. The Decay Check (The Gatekeeper)"]
         RunTest["📉 Run Golden Set Inference"]
-        DecayLogic{"Decay Score > 15%?<br/>(vs Baseline)"}
+        DecayLogic{"Decay Score > say, 15%?<br/>(vs Baseline)"}
     end
     class RunTest,DecayLogic gatekeeper
 
