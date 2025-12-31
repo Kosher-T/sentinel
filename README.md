@@ -41,54 +41,70 @@ To test this system properly, I am currently running it in a controlled, **simul
 
 ```mermaid
 graph TD
-    %% --- Nodes ---
-    A["Daily Schedule"] -->|Trigger| B("GitHub Actions Manager")
-    
-    %% Manager only has ONE action now: Run the container
-    B -->|Run| C
-    
-    subgraph Phase3 ["Phase 3: The Specialist (Sentinel)"]
+    %% Styling
+    classDef setup fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
+    classDef production fill:#fff3e0,stroke:#e65100,stroke-width:2px;
+    classDef retraining fill:#f3e5f5,stroke:#4a148c,stroke-width:2px;
+    classDef gatekeeper fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px;
+    classDef stop fill:#ffebee,stroke:#c62828,stroke-width:2px,color:#c62828;
+    classDef deploy fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#2e7d32;
+
+    %% 1. Setup Phase
+    subgraph Setup ["1. Setup (The Baseline)"]
         direction TB
-        C{"QC Docker Container"}
-        
-        C -->|Input Stream| D["Incoming Video Data"]
-        
-        %% --- Path 1: Data Drift (The 'Softwood' Check) ---
-        D -->|"MobileNetV2"| E["Extract Feature Embeddings"]
-        E -->|"Wasserstein Distance"| F["Data Drift Analysis"]
-        
-        %% --- Path 2: Model Decay (The 'Wobbly Chair' Check) ---
-        D -->|"VFI Model Inference"| X["Generate Prediction"]
-        X -->|"Compare w/ Golden Set"| Y["Model Decay Analysis"]
-        
-        %% --- Synthesis ---
-        F --> Z{"Aggregate Health Score"}
-        Y --> Z
+        Champion[("🏆 Champion Model<br/>(Current Live Model)")]
+        GoldenSet[("✨ Golden Set<br/>(Immutable Truth)")]
+        RefDist["Reference Distribution<br/>(Training Data Normals)<br/>+<br/>Training Facilities"]
     end
-    
-    %% Logic flows out of Phase 3 directly to consequences
-    Z -->|"Score < Threshold"| G["Verdict: FAIL"]
-    Z -->|"Score > Threshold"| H["Verdict: PASS"]
-    
-    %% Direct sequential actions based on Verdict
-    G -->|"Triggers"| J["Trigger Retraining Pipeline"]
-    H -->|"Action"| K["Log Success & Metrics"]
-    
-    J -->|Simulated| L["Fine-Tune Model on New Data"]
-    L --> M["Deploy New Champion"]
+    class Champion,GoldenSet,RefDist setup
 
-    %% --- Styles ---
-    classDef base fill:#fff,stroke:#333,stroke-width:1px
-    classDef action fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    classDef success fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#1b5e20
-    classDef fail fill:#ffebee,stroke:#c62828,stroke-width:2px,color:#b71c1c
-    classDef decision fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    %% 2. Production Phase
+    subgraph Production ["2. Production Loop (The Watchtower)"]
+        Incoming[/"Incoming User Data<br/>(e.g., 4K Anime Video)"/]
+        Sentinel{"🛡️ Sentinel Watch"}
+        DriftLogic{"Is Drift Consistently High?<br/>(e.g., > 5 Timeframes)"}
+        FlagData["💾 Save & Flag New Data"]
+    end
+    class Incoming,Sentinel,DriftLogic,FlagData production
 
-    class A,D,E,X base
-    class B,J,L,M action
-    class C,F,Y,Z decision
-    class H,K success
-    class G fail
+    %% 3. Retraining Phase
+    subgraph Retraining ["3. The Retraining Loop (The Fix)"]
+        Train["🏋️ Train Challenger Model<br/>(Original Data + New Drifted Data)"]
+        Challenger[("🥊 Challenger Model<br/>(Candidate)")]
+    end
+    class Train,Challenger retraining
+
+    %% 4. Decay Check Phase
+    subgraph Gatekeeper ["4. The Decay Check (The Gatekeeper)"]
+        RunTest["📉 Run Golden Set Inference"]
+        DecayLogic{"Decay Score > say, 15%?<br/>(vs Baseline)"}
+    end
+    class RunTest,DecayLogic gatekeeper
+
+    %% Outcomes
+    StopAction["🛑 STOP<br/>Alert Engineer<br/>(Fix Drift, Broken Core)"]
+    DeployAction["🚀 DEPLOY<br/>Replace Champion<br/>(Self-Healing Complete)"]
+    class StopAction stop
+    class DeployAction deploy
+
+    %% Connections
+    RefDist --> Sentinel
+    Champion -.-> Sentinel
+    Incoming --> Sentinel
+    Sentinel --> DriftLogic
+    
+    DriftLogic -- No<br/>(Blip/Noise) --> Sentinel
+    DriftLogic -- Yes<br/>(Real Shift) --> FlagData
+    
+    FlagData --> Train
+    Train --> Challenger
+    
+    Challenger --> RunTest
+    GoldenSet --> RunTest
+    RunTest --> DecayLogic
+    
+    DecayLogic -- Yes<br/>(Model is worse) --> StopAction
+    DecayLogic -- No<br/>(Model is safe) --> DeployAction
 ```
 
 ## Tech Stack & Design Patterns
