@@ -33,12 +33,8 @@ DRIFT_MONITOR_ROOT = PROJECT_ROOT / "data" / "data_drift"
 # --- MODEL PATHS ---
 # Directories where the latest 'Fresh' and 'Old' models are stored for decay comparison
 DATA_PATH = PROJECT_ROOT / "data" / "golden_set_septuplets" / "models"
-OLD_MODEL_PATH = DATA_PATH / "old_model"
-FRESH_MODEL_PATH = DATA_PATH / "fresh_model"
-
-# Specific fallback paths for legacy scripts
-# OLD_MODEL_PATH = OLD_MODEL_DIR / "vfi_model_old.keras"
-# FRESH_MODEL_PATH = FRESH_MODEL_DIR / "vfi_model_fresh.keras"
+OLD_MODEL_PATH = DATA_PATH / "production"
+FRESH_MODEL_PATH = DATA_PATH / "challenger"
 
 # --- RESULTS & EMBEDDINGS (DECAY PIPELINE) ---
 # Intermediate outputs for the decay pipeline
@@ -52,9 +48,9 @@ DRIFT_THRESHOLD = 7.0  # % distance limit for incoming production data
 
 # --- CONTINUOUS MONITORING SETTINGS ---
 MONITOR_SCHEDULE = "0 */6 * * *" # Cron: Every 6 hours
-RETRAIN_TRIGGER_COUNT = 5       # Consecutive fails required to trigger an automated retrain
-DRIFT_FAILURE_RATIO = 0.6       # 60% failure in recent window triggers system alert
-TIMEFRAME_WINDOW = 5            # Number of past timeframes to consider for the failure ratio
+RETRAIN_TRIGGER_COUNT = 5        # Consecutive fails required to trigger an automated retrain
+DRIFT_FAILURE_RATIO = 0.6        # 60% failure in recent window triggers system alert
+TIMEFRAME_WINDOW = 5             # Number of past timeframes to consider for the failure ratio
 
 # --- DATABASE & LOGGING (For Dashboard & Persistence) ---
 DRIFT_HISTORY_DB = DRIFT_MONITOR_ROOT / "drift_history.db" # Updated to .db to match dashboard
