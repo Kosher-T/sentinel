@@ -1,73 +1,68 @@
 import os
 import sys
 import numpy as np
-import tensorflow as tf
-import keras
-from keras.preprocessing import image
-from keras.applications.mobilenet_v2 import MobileNetV2, preprocess_input as mobile_preprocess
-from keras.applications.vgg16 import VGG16, preprocess_input as vgg_preprocess
-from keras.applications.resnet50 import ResNet50, preprocess_input as resnet_preprocess
+import pandas as pd
 from pathlib import Path
+import logging
+
+# Handle Keras/TF Import Discrepancies
+try:
+    from tensorflow.keras.preprocessing import image # type:ignore
+except ImportError:
+    from keras.preprocessing import image
 
 # Load global configuration
 file_path = Path(__file__).resolve()
 project_root = file_path.parent.parent
-
 if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 import all_config as config
 
-# Factory for standard architectures
-MODEL_FACTORY = {
-    "MobileNetV2": {"class": MobileNetV2, "preprocess": mobile_preprocess},
-    "VGG16": {"class": VGG16, "preprocess": vgg_preprocess},
-    "ResNet50": {"class": ResNet50, "preprocess": resnet_preprocess}
-}
+# Configure local logging
+logging.basicConfig(level=logging.INFO, format='[%(asctime)s] EXTRACTOR: %(message)s')
 
 BATCH_SIZE = 32
 
+def get_data_mode(directory):
+    """
+    Analyzes folder contents to determine if we are in 'image' or 'tabular' mode.
+    """
+    path = Path(directory)
+    extensions = [f.suffix.lower() for f in path.rglob('*') if f.is_file()]
+    
+    img_exts = {'.jpg', '.jpeg', '.png', '.webp', '.bmp'}
+    tab_exts = {'.csv', '.parquet', '.xlsx'}
+    
+    if any(ext in img_exts for ext in extensions):
+        return "image"
+    if any(ext in tab_exts for ext in extensions):
+        return "tabular"
+    
+    return "unknown"
+
+# --- IMAGE EXTRACTOR LOGIC ---
+
 def get_recursive_image_paths(directory, extensions=('.png', '.jpg', '.jpeg', '.webp')):
-    """
-    Scours a directory and all subdirectories for images.
-    """
     dir_path = Path(directory)
     image_paths = []
     for ext in extensions:
         image_paths.extend(list(dir_path.rglob(f"*{ext}")))
-    
-    print(f"🔍 Scoured {directory}: Found {len(image_paths)} images across all subfolders.")
     return [str(p) for p in image_paths]
 
-def create_embedding_model():
-    """
-    Creates the feature extraction model based on config settings.
-    """
-    if config.EMBEDDING_MODEL_TYPE not in MODEL_FACTORY:
-        raise ValueError(f"Unsupported model type: {config.EMBEDDING_MODEL_TYPE}")
-    
-    base_class = MODEL_FACTORY[config.EMBEDDING_MODEL_TYPE]["class"]
-    base = base_class(
-        weights='imagenet', 
-        include_top=False, 
-        input_shape=config.EMBEDDING_INPUT_SHAPE,
-        pooling='avg'
-    )
-    return base
-
-def extract_features_from_list(model, image_paths):
-    """
-    Generates embeddings from a specific list of image paths.
-    This avoids redundant directory scouring.
-    """
+def extract_image_features(model, image_paths):
+    """Generates embeddings from images using the distilled/provided model."""
     if not image_paths:
         return np.array([])
 
     all_embeddings = []
-    target_h, target_w = config.EMBEDDING_INPUT_SHAPE[:2]
-    preprocess_func = MODEL_FACTORY[config.EMBEDDING_MODEL_TYPE]["preprocess"]
+    # Try to infer input shape from config or model
+    try:
+        target_h, target_w = config.EMBEDDING_INPUT_SHAPE[:2]
+    except AttributeError:
+        target_h, target_w = 224, 224 # Fallback
 
-    print(f"🚀 Generating embeddings for {len(image_paths)} images...")
+    logging.info(f"Generating embeddings for {len(image_paths)} images...")
     
     for i in range(0, len(image_paths), BATCH_SIZE):
         batch_paths = image_paths[i:i + BATCH_SIZE]
@@ -85,19 +80,62 @@ def extract_features_from_list(model, image_paths):
             continue
 
         batch_array = np.array(batch_imgs)
-        preprocessed_batch = preprocess_func(batch_array)
+        # We assume pre-processing is handled inside the distilled model 
+        # or normalized to 0-1 here for general purposes
+        batch_array = batch_array / 255.0
         
-        features = model.predict(preprocessed_batch, verbose=0)
+        features = model.predict(batch_array, verbose=0)
         all_embeddings.append(features)
 
-    if not all_embeddings:
+    return np.vstack(all_embeddings) if all_embeddings else np.array([])
+
+# --- TABULAR EXTRACTOR LOGIC ---
+
+def extract_tabular_features(directory):
+    """
+    Loads tabular data and ensures it's returned as a standardized 
+    NumPy array for drift analysis.
+    """
+    path = Path(directory)
+    all_dfs = []
+    
+    logging.info(f"Loading tabular data from {directory}...")
+    
+    for file in path.rglob('*'):
+        try:
+            if file.suffix == '.csv':
+                all_dfs.append(pd.read_csv(file))
+            elif file.suffix == '.parquet':
+                all_dfs.append(pd.read_parquet(file))
+        except Exception as e:
+            logging.warning(f"   -> Could not read {file.name}: {e}")
+
+    if not all_dfs:
         return np.array([])
-        
-    return np.vstack(all_embeddings)
+
+    combined_df = pd.concat(all_dfs, axis=0)
+    # Drop non-numeric columns to ensure distance math works
+    numeric_df = combined_df.select_dtypes(include=[np.number])
+    
+    return numeric_df.values
+
+# --- UNIVERSAL ENTRY POINT ---
 
 def extract_features(model, directory):
     """
-    Legacy/Convenience wrapper that discovers files and extracts features.
+    Universal entry point that detects data type and returns embeddings/vectors.
     """
-    image_paths = get_recursive_image_paths(directory)
-    return extract_features_from_list(model, image_paths)
+    mode = get_data_mode(directory)
+    
+    if mode == "image":
+        logging.info("Detected Data Mode: IMAGE")
+        image_paths = get_recursive_image_paths(directory)
+        return extract_image_features(model, image_paths)
+    
+    elif mode == "tabular":
+        logging.info("Detected Data Mode: TABULAR")
+        return extract_tabular_features(directory)
+    
+    else:
+        logging.error(f"🔴 Unsupported or empty data format in {directory}")
+        return np.array([])
