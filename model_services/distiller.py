@@ -13,7 +13,7 @@ except ImportError:
 
 # Framework imports - wrapped in try/except to stay lightweight if not installed
 try:
-    import torch  # type:ignore  # PyTorch is optional. I don't have it in my environment.
+    import torch  # type:ignore  # PyTorch is optional.
     import torch.nn as nn  # type: ignore
 except ImportError:
     torch = None
@@ -57,6 +57,8 @@ class Distiller:
         """
         try:
             if framework == "keras":
+                # Ensure we handle models with multiple inputs if necessary, 
+                # but standard CV models usually have one.
                 input_shape = model.input_shape[1:]
                 test_input = np.random.rand(5, *input_shape).astype(np.float32)
                 features = model.predict(test_input, verbose=0)
@@ -83,37 +85,44 @@ class Distiller:
             return True 
 
     def distill_keras(self, model_path):
-        """Logic for Keras/TensorFlow models with smart bottleneck detection."""
+        """
+        Logic for Keras models using 'compile=False' to bypass custom loss 
+        errors and an iterative layer-stripping approach.
+        """
         try:
-            # Added safe_mode=False to bypass Lambda deserialization errors
-            full_model = load_model(model_path, safe_mode=False)
+            # FIX: Load with compile=False to ignore 'prediction_loss' or other custom objects
+            logging.info(f"   -> [Keras] Loading {model_path.name} (compile=False)...")
+            full_model = load_model(model_path, compile=False, safe_mode=False)
             
-            candidates = []
-            for layer in reversed(full_model.layers):  # type: ignore
-                out_shape = layer.output_shape
-                if len(out_shape) == 2:
-                    score = 0
-                    if any(k in layer.name.lower() for k in ['pooling', 'flatten', 'bottleneck', 'embedding']):
-                        score = 1
-                    candidates.append((score, layer))
-
-            candidates.sort(key=lambda x: x[0], reverse=True)
-
-            for score, layer in candidates:
-                logging.info(f"   -> [Keras] Attempting truncation at: {layer.name}...")
-                try:
-                    distilled_model = Model(inputs=full_model.input, outputs=layer.output)  # type: ignore
-                    
-                    if self.perform_variance_check(distilled_model, framework="keras"):
-                        logging.info(f"   -> [Keras] Successful distillation at layer: {layer.name}")
-                        return distilled_model
-                except Exception:
+            # Iterative Strategy: Walk backwards from the end of the model
+            # We skip the very last layer (usually the prediction head) automatically
+            layers = full_model.layers  # type: ignore
+            max_depth = min(len(layers), 10) # Don't strip more than 10 layers deep
+            
+            for i in range(1, max_depth + 1):
+                target_layer = layers[-i]
+                
+                # We only want layers that output 2D/4D tensors (embeddings or feature maps)
+                # We avoid sticking to a layer that's just a Dropout or Activation if possible
+                if any(forbidden in target_layer.name.lower() for forbidden in ['dropout', 'input']):
                     continue
 
-            logging.error(f"🔴 [Keras] All candidate layers failed for {model_path.name}")
+                logging.info(f"   -> [Keras] Testing truncation at layer: {target_layer.name}...")
+                
+                try:
+                    distilled_model = Model(inputs=full_model.input, outputs=target_layer.output)  # type: ignore
+                    
+                    if self.perform_variance_check(distilled_model, framework="keras"):
+                        logging.info(f"🟢 [Keras] Successful distillation at: {target_layer.name}")
+                        return distilled_model
+                except Exception as e:
+                    logging.warning(f"      -> Layer {target_layer.name} incompatible: {e}")
+                    continue
+
+            logging.error(f"🔴 [Keras] All truncation attempts failed for {model_path.name}")
             return None
         except Exception as e:
-            logging.error(f"🔴 Keras distillation failed: {e}")
+            logging.error(f"🔴 Keras load failed even with compile=False: {e}")
             return None
 
     def distill_pytorch(self, model_path):
@@ -154,17 +163,15 @@ class Distiller:
         if ext in [".keras", ".h5"]:
             latent_model = self.distill_keras(model_file)
             if latent_model:
-                tmp_save_path = target_file.with_suffix(".tmp")
-                latent_model.save(tmp_save_path)
-                os.rename(tmp_save_path, target_file)
+                # Direct save, removing .tmp strategy as requested
+                latent_model.save(target_file)
                 return True
         
         elif ext in [".pt", ".pth"]:
             latent_model = self.distill_pytorch(model_file)
             if latent_model:
-                tmp_save_path = target_file.with_suffix(".tmp")
-                torch.save(latent_model, tmp_save_path)  # type: ignore
-                os.rename(tmp_save_path, target_file)
+                # Direct save, removing .tmp strategy as requested
+                torch.save(latent_model, target_file)  # type: ignore
                 return True
         
         return False
