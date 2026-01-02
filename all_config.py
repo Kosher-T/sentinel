@@ -73,11 +73,11 @@ CHALLENGER_DISTILLED_DIR.mkdir(parents=True, exist_ok=True)
 
 # Distiller Settings
 DISTILL_SUFFIX = "_latent"
-POLLING_INTERVAL = 5  # Seconds between folder scans
+POLLING_INTERVAL = 180  # Seconds between folder scans
 STABILITY_DELAY = 2   # Seconds to wait for file size stability
 
 # Mapping of original folders to distilled folders for the Distiller to watch
 DISTILL_MAP = {
-    str(DATA_PATH / "golden_set_septuplets" / "models" / "production"): str(PRODUCTION_DISTILLED_DIR),
-    str(DATA_PATH / "golden_set_septuplets" / "models" / "challenger"): str(CHALLENGER_DISTILLED_DIR)
+    str(OLD_MODEL_PATH): str(PRODUCTION_DISTILLED_DIR),
+    str(FRESH_MODEL_PATH): str(CHALLENGER_DISTILLED_DIR)
 }
