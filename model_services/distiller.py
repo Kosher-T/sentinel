@@ -9,6 +9,7 @@ try:
     from tensorflow.keras.models import Model, load_model  # type:ignore
 except ImportError:
     from keras.models import Model, load_model
+
 import all_config as config
 
 # Framework imports - wrapped in try/except to stay lightweight if not installed
