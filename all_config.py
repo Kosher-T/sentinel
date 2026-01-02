@@ -64,8 +64,8 @@ CUDA_VISIBLE_DEVICES = "-1"
 
 # --- DISTILLER CONFIGURATION ---
 # Directories for distilled (latent space) models
-PRODUCTION_DISTILLED_DIR = DATA_PATH / "golden_set_septuplets" / "models" / "production_distilled"
-CHALLENGER_DISTILLED_DIR = DATA_PATH / "golden_set_septuplets" / "models" / "challenger_distilled"
+PRODUCTION_DISTILLED_DIR = DATA_PATH / "production_distilled"
+CHALLENGER_DISTILLED_DIR = DATA_PATH / "challenger_distilled"
 
 # Ensure they exist
 PRODUCTION_DISTILLED_DIR.mkdir(parents=True, exist_ok=True)
