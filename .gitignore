@@ -3,8 +3,10 @@ venv/
 __pycache__/
 
 data/
+data/model_decay/fresh_model_results/
 
 *.7z
 *.mp4
 *.zip
 *.json
+*.webp
