@@ -47,7 +47,7 @@ class SentinelWatch:
     # --- SIMULATED UTILITIES ---
     
     def simulate_cloud_connection(self):
-        logging.info("☁️  Connecting to Cloud Environment...")
+        logging.info("Connecting to Cloud Environment...")
         time.sleep(1) 
         return True
 
@@ -56,7 +56,7 @@ class SentinelWatch:
 
     def simulate_retraining(self, original_data, new_data_folder):
         """Simulates retraining and saving a new model file."""
-        logging.info("🛠️  Starting Retraining Loop (Challenger Model)...")
+        logging.info("Starting Retraining Loop (Challenger Model)...")
         logging.info(f"   -> Mixing {original_data} + {new_data_folder}")
         time.sleep(3) 
         # In a real scenario, this would be saved into the CHALLENGER folder
@@ -69,9 +69,9 @@ class SentinelWatch:
         return new_model_path
 
     def simulate_deployment(self, new_model_path):
-        logging.info(f"🚀 Deploying Challenger Model ({new_model_path.name}) to Production...")
+        logging.info(f"Deploying Challenger Model ({new_model_path.name}) to Production...")
         time.sleep(2)
-        logging.info("✅ Deployment Complete. New model is live.")
+        logging.info("🟢 Deployment Complete. New model is live.")
 
     def archive_incoming_data(self, score, status):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -79,7 +79,7 @@ class SentinelWatch:
         dest_dir = config.ARCHIVED_DATA_PATH / folder_name
         dest_dir.mkdir(parents=True, exist_ok=True)
         
-        logging.info(f"🗄️  Archiving incoming data to {dest_dir}...")
+        logging.info(f"🗄️ Archiving incoming data to {dest_dir}...")
         
         try:
             if config.INCOMING_DATA_PATH.exists():
@@ -117,7 +117,7 @@ class SentinelWatch:
                 return distilled_path
             time.sleep(5)
             
-        logging.error(f"❌ Timeout: Distiller did not produce {distilled_name} in time.")
+        logging.error(f"🔴 Timeout: Distiller did not produce {distilled_name} in time.")
         return None
 
     def record_drift_result(self, score, status, folder_path=None):
@@ -143,7 +143,7 @@ class SentinelWatch:
         return is_triggered, fails, total
 
     def run_decay_pipeline(self, challenger_model_path):
-        logging.info("📉 Running Decay Pipeline (Gatekeeper Check)...")
+        logging.info("Running Decay Pipeline (Gatekeeper Check)...")
         
         # PHASE TWO: Instead of the full model, we need the DISTILLED version for analysis
         distilled_path = self.wait_for_distillation(challenger_model_path)
@@ -153,7 +153,7 @@ class SentinelWatch:
         try:
             golden_files = detector.get_recursive_image_paths(config.GOLDEN_SET_DIR)
             if not golden_files:
-                logging.error("❌ Golden Set empty! Cannot verify decay.")
+                logging.error("🔴 Golden Set empty! Cannot verify decay.")
                 return False
 
             logging.info(f"   -> Testing on {len(golden_files)} Golden Set images using {distilled_path.name}")
@@ -163,14 +163,14 @@ class SentinelWatch:
             simulated_decay_score = random.uniform(0, 10.0) 
             
             if simulated_decay_score > config.DECAY_THRESHOLD:
-                logging.error(f"⛔ DECAY CHECK FAILED. Score {simulated_decay_score:.2f}% > Threshold {config.DECAY_THRESHOLD}%")
+                logging.error(f"🔴 DECAY CHECK FAILED. Score {simulated_decay_score:.2f}% > Threshold {config.DECAY_THRESHOLD}%")
                 return False
             else:
-                logging.info(f"✅ Decay Check Passed. Score {simulated_decay_score:.2f}% < Threshold {config.DECAY_THRESHOLD}%")
+                logging.info(f"🟢 Decay Check Passed. Score {simulated_decay_score:.2f}% < Threshold {config.DECAY_THRESHOLD}%")
                 return True
 
         except Exception as e:
-            logging.error(f"❌ Decay Pipeline Error: {e}")
+            logging.error(f"🔴 Decay Pipeline Error: {e}")
             return False
 
     # --- MAIN WORKFLOW ---
@@ -189,7 +189,7 @@ class SentinelWatch:
         
         if status == "PASS":
             if not is_triggered:
-                logging.info("✅ Drift Status: OK. Archiving and sleeping.")
+                logging.info("🟢 Drift Status: OK. Archiving and sleeping.")
                 return
             else:
                 logging.warning(f"⚠️ Current result PASS, but history shows instability ({fails}/{total} fails).")
@@ -214,7 +214,7 @@ class SentinelWatch:
                 self.simulate_alert("CRITICAL", "Retrained model failed Decay Check. Deployment Aborted.")
                 
         else:
-            logging.info("ℹ️  Drift detected but threshold not yet met. Recorded and waiting.")
+            logging.info("ℹ️ Drift detected but threshold not yet met. Recorded and waiting.")
 
 if __name__ == "__main__":
     sentinel = SentinelWatch()
