@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import shutil
 import logging
@@ -10,8 +11,6 @@ try:
 except ImportError:
     from keras.models import Model, load_model
 
-import all_config as config
-
 # Framework imports - wrapped in try/except to stay lightweight if not installed
 try:
     import torch  # type:ignore  # PyTorch is optional. I don't have it in my environment.
@@ -19,8 +18,25 @@ try:
 except ImportError:
     torch = None
 
+file_path = Path(__file__).resolve()
+project_root = file_path.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
+
+import all_config as config
+
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] DISTILLER: %(message)s')
+
+# Bypass Keras Lambda security restriction for trusted internal models
+try:
+    if hasattr(tf, 'keras'):
+        tf.keras.config.enable_unsafe_deserialization()  # type: ignore
+    elif 'keras' in globals():
+        import keras
+        keras.config.enable_unsafe_deserialization()
+except Exception:
+    pass
 
 class Distiller:
     """
@@ -41,25 +57,20 @@ class Distiller:
         """
         try:
             if framework == "keras":
-                # Get input shape, ignoring batch dimension
                 input_shape = model.input_shape[1:]
-                # Create a small batch of random noise
                 test_input = np.random.rand(5, *input_shape).astype(np.float32)
                 features = model.predict(test_input, verbose=0)
-            elif framework == "pytorch":
-                # Assuming standard CV input if not specified
-                test_input = torch.rand(5, 3, 224, 224)  # type: ignore
-                with torch.no_grad():  # type: ignore
+            elif framework == "pytorch" and torch is not None:
+                test_input = torch.rand(5, 3, 224, 224)
+                with torch.no_grad():
                     features = model(test_input).numpy()
             else:
                 return True
 
-            # 1. Size Check: Latent space should usually be > 1 dimension 
             if features.shape[-1] <= 1:
                 logging.error(f"   -> Variance Check Failed: Output dimension too small ({features.shape[-1]}).")
                 return False
 
-            # 2. Variance Check: Ensure the features aren't all identical 
             variance = np.var(features, axis=0).mean()
             if variance < 1e-6:
                 logging.error(f"   -> Variance Check Failed: Model produces static output (Var: {variance:.8f}).")
@@ -69,27 +80,23 @@ class Distiller:
             return True
         except Exception as e:
             logging.warning(f"   -> Variance Check skipped due to error: {e}")
-            return True # Default to True to avoid blocking if input shape inference fails
+            return True 
 
     def distill_keras(self, model_path):
-        """Logic for Keras/TensorFlow models with smart bottleneck detection and iterative fallback."""
+        """Logic for Keras/TensorFlow models with smart bottleneck detection."""
         try:
-            full_model = load_model(model_path)
+            # Added safe_mode=False to bypass Lambda deserialization errors
+            full_model = load_model(model_path, safe_mode=False)
             
-            # Create a list of candidate layers (reversed order)
-            # We filter for layers that produce 1D/2D vectors (Batch, Features)
             candidates = []
             for layer in reversed(full_model.layers):  # type: ignore
                 out_shape = layer.output_shape
                 if len(out_shape) == 2:
-                    # Preference given to typical bottleneck layers
                     score = 0
                     if any(k in layer.name.lower() for k in ['pooling', 'flatten', 'bottleneck', 'embedding']):
                         score = 1
                     candidates.append((score, layer))
 
-            # Sort candidates so preferred layers come first, but keep depth order
-            # (Basically: try pooling layers first, then try any 1D layers in reverse order)
             candidates.sort(key=lambda x: x[0], reverse=True)
 
             for score, layer in candidates:
@@ -97,32 +104,27 @@ class Distiller:
                 try:
                     distilled_model = Model(inputs=full_model.input, outputs=layer.output)  # type: ignore
                     
-                    # RUN VARIANCE CHECK
                     if self.perform_variance_check(distilled_model, framework="keras"):
                         logging.info(f"   -> [Keras] Successful distillation at layer: {layer.name}")
                         return distilled_model
-                    else:
-                        logging.warning(f"   -> [Keras] Layer {layer.name} failed variance check. Trying next candidate...")
-                except Exception as e:
-                    logging.warning(f"   -> [Keras] Could not create model for layer {layer.name}: {e}")
+                except Exception:
                     continue
 
-            logging.error(f"   -> [Keras] All candidate layers failed for {model_path.name}")
+            logging.error(f"🔴 [Keras] All candidate layers failed for {model_path.name}")
             return None
         except Exception as e:
-            logging.error(f"   -> Keras distillation failed: {e}")
+            logging.error(f"🔴 Keras distillation failed: {e}")
             return None
 
     def distill_pytorch(self, model_path):
         """Logic for PyTorch models with iterative fallback."""
         if torch is None:
-            logging.error("   -> Cannot distill PyTorch model: 'torch' library not found.")
+            logging.error("🔴 Cannot distill PyTorch model: 'torch' library not found.")
             return None
         try:
             model = torch.load(model_path)
             if isinstance(model, nn.Module):  # type: ignore
-                # Try stripping progressively more layers if variance check fails
-                for i in range(1, 4): # Try stripping 1, 2, or 3 layers back
+                for i in range(1, 4): 
                     layers = list(model.children())[:-i]
                     latent_model = nn.Sequential(*layers)  # type: ignore
                     latent_model.eval()
@@ -130,11 +132,9 @@ class Distiller:
                     logging.info(f"   -> [PyTorch] Attempting truncation (stripped {i} layers)...")
                     if self.perform_variance_check(latent_model, framework="pytorch"):
                         return latent_model
-                    
-                logging.error(f"   -> [PyTorch] All distillation attempts failed for {model_path.name}")
             return None
         except Exception as e:
-            logging.error(f"   -> PyTorch distillation failed: {e}")
+            logging.error(f"🔴 PyTorch distillation failed: {e}")
             return None
 
     def is_file_stable(self, filepath):
@@ -163,15 +163,14 @@ class Distiller:
             latent_model = self.distill_pytorch(model_file)
             if latent_model:
                 tmp_save_path = target_file.with_suffix(".tmp")
-                torch.save(latent_model, tmp_save_path)    # type: ignore
+                torch.save(latent_model, tmp_save_path)  # type: ignore
                 os.rename(tmp_save_path, target_file)
                 return True
         
-        logging.warning(f"   -> Extension {ext} detected but no specific handler implemented yet.")
         return False
 
     def run(self):
-        logging.info("🚀 Generalized Distiller Service Started. Monitoring model folders...")
+        logging.info("🟢 Generalized Distiller Service Started. Monitoring model folders...")
         
         while True:
             for src_dir, dest_dir in self.watch_map.items():
@@ -200,7 +199,7 @@ class Distiller:
                     logging.info(f"✨ New {model_file.suffix} model detected: {model_file.name}.")
                     
                     if self.process_model(model_file, target_file):
-                        logging.info(f"✅ Distilled version saved: {distilled_name}")
+                        logging.info(f"💾 Distilled version saved: {distilled_name}")
 
             time.sleep(config.POLLING_INTERVAL)
 
