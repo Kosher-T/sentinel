@@ -32,7 +32,7 @@ logging.basicConfig(level=logging.INFO, format='[%(asctime)s] DISTILLER: %(messa
 # Bypass Keras Lambda security restriction for trusted internal models
 try:
     if hasattr(tf, 'keras'):
-        tf.keras.config.enable_unsafe_deserialization()
+        tf.keras.config.enable_unsafe_deserialization()  # type: ignore
     elif 'keras' in globals():
         import keras
         keras.config.enable_unsafe_deserialization()
@@ -59,7 +59,7 @@ class Distiller:
         try:
             # Clear TensorFlow/Keras graph
             if hasattr(tf, 'keras'):
-                tf.keras.backend.clear_session()
+                tf.keras.backend.clear_session()  # type: ignore
             elif 'keras' in globals():
                 import keras
                 keras.backend.clear_session()
@@ -115,7 +115,7 @@ class Distiller:
             
             # Iterative Strategy: Walk backwards from the end of the model
             # We skip the very last layer (usually the prediction head) automatically
-            layers = full_model.layers
+            layers = full_model.layers  # type: ignore
             max_depth = min(len(layers), 10) # Don't strip more than 10 layers deep
             
             for i in range(1, max_depth + 1):
@@ -129,7 +129,7 @@ class Distiller:
                 logging.info(f"   -> [Keras] Testing truncation at layer: {target_layer.name}...")
                 
                 try:
-                    distilled_model = Model(inputs=full_model.input, outputs=target_layer.output)
+                    distilled_model = Model(inputs=full_model.input, outputs=target_layer.output)  # type: ignore
                     
                     if self.perform_variance_check(distilled_model, framework="keras"):
                         logging.info(f"🟢 [Keras] Successful distillation at: {target_layer.name}")
@@ -151,10 +151,10 @@ class Distiller:
             return None
         try:
             model = torch.load(model_path)
-            if isinstance(model, nn.Module):
+            if isinstance(model, nn.Module):  # type: ignore
                 for i in range(1, 4): 
                     layers = list(model.children())[:-i]
-                    latent_model = nn.Sequential(*layers)
+                    latent_model = nn.Sequential(*layers)  # type: ignore
                     latent_model.eval()
                     
                     logging.info(f"   -> [PyTorch] Attempting truncation (stripped {i} layers)...")
@@ -190,7 +190,7 @@ class Distiller:
         elif ext in [".pt", ".pth"]:
             latent_model = self.distill_pytorch(model_file)
             if latent_model:
-                torch.save(latent_model, target_file)
+                torch.save(latent_model, target_file)  # type: ignore
                 del latent_model # Remove local reference immediately
                 success = True
 
