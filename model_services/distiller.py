@@ -3,6 +3,7 @@ import sys
 import time
 import shutil
 import logging
+import gc
 import numpy as np
 from pathlib import Path
 import tensorflow as tf
@@ -31,7 +32,7 @@ logging.basicConfig(level=logging.INFO, format='[%(asctime)s] DISTILLER: %(messa
 # Bypass Keras Lambda security restriction for trusted internal models
 try:
     if hasattr(tf, 'keras'):
-        tf.keras.config.enable_unsafe_deserialization()  # type: ignore
+        tf.keras.config.enable_unsafe_deserialization()
     elif 'keras' in globals():
         import keras
         keras.config.enable_unsafe_deserialization()
@@ -49,6 +50,24 @@ class Distiller:
         self.suffix = config.DISTILL_SUFFIX
         # Supported extensions for CV models
         self.supported_extensions = [".keras", ".h5", ".pt", ".pth", ".onnx", ".pb"]
+
+    def cleanup_memory(self):
+        """
+        Aggressively flushes Keras sessions and invokes garbage collection 
+        to keep RAM usage low during idle sleep.
+        """
+        try:
+            # Clear TensorFlow/Keras graph
+            if hasattr(tf, 'keras'):
+                tf.keras.backend.clear_session()
+            elif 'keras' in globals():
+                import keras
+                keras.backend.clear_session()
+        except Exception:
+            pass
+        
+        # Force Python garbage collection
+        gc.collect()
 
     def perform_variance_check(self, model, framework="keras"):
         """
@@ -96,7 +115,7 @@ class Distiller:
             
             # Iterative Strategy: Walk backwards from the end of the model
             # We skip the very last layer (usually the prediction head) automatically
-            layers = full_model.layers  # type: ignore
+            layers = full_model.layers
             max_depth = min(len(layers), 10) # Don't strip more than 10 layers deep
             
             for i in range(1, max_depth + 1):
@@ -110,7 +129,7 @@ class Distiller:
                 logging.info(f"   -> [Keras] Testing truncation at layer: {target_layer.name}...")
                 
                 try:
-                    distilled_model = Model(inputs=full_model.input, outputs=target_layer.output)  # type: ignore
+                    distilled_model = Model(inputs=full_model.input, outputs=target_layer.output)
                     
                     if self.perform_variance_check(distilled_model, framework="keras"):
                         logging.info(f"🟢 [Keras] Successful distillation at: {target_layer.name}")
@@ -132,10 +151,10 @@ class Distiller:
             return None
         try:
             model = torch.load(model_path)
-            if isinstance(model, nn.Module):  # type: ignore
+            if isinstance(model, nn.Module):
                 for i in range(1, 4): 
                     layers = list(model.children())[:-i]
-                    latent_model = nn.Sequential(*layers)  # type: ignore
+                    latent_model = nn.Sequential(*layers)
                     latent_model.eval()
                     
                     logging.info(f"   -> [PyTorch] Attempting truncation (stripped {i} layers)...")
@@ -159,22 +178,25 @@ class Distiller:
     def process_model(self, model_file, target_file):
         """Determines framework and executes distillation."""
         ext = model_file.suffix.lower()
+        success = False
         
         if ext in [".keras", ".h5"]:
             latent_model = self.distill_keras(model_file)
             if latent_model:
-                # Direct save, removing .tmp strategy as requested
                 latent_model.save(target_file)
-                return True
+                del latent_model # Remove local reference immediately
+                success = True
         
         elif ext in [".pt", ".pth"]:
             latent_model = self.distill_pytorch(model_file)
             if latent_model:
-                # Direct save, removing .tmp strategy as requested
-                torch.save(latent_model, target_file)  # type: ignore
-                return True
-        
-        return False
+                torch.save(latent_model, target_file)
+                del latent_model # Remove local reference immediately
+                success = True
+
+        # Aggressively flush memory after work is done
+        self.cleanup_memory()
+        return success
 
     def run(self):
         logging.info("🟢 Generalized Distiller Service Started. Monitoring model folders...")
