@@ -1,6 +1,8 @@
 import os
 import sys
 import time
+import json
+import hashlib
 import shutil
 import logging
 import gc
@@ -12,9 +14,8 @@ try:
 except ImportError:
     from keras.models import Model, load_model
 
-# Framework imports - wrapped in try/except to stay lightweight if not installed
 try:
-    import torch  # type:ignore  # PyTorch is optional.
+    import torch  # type: ignore
     import torch.nn as nn  # type: ignore
 except ImportError:
     torch = None
@@ -26,10 +27,9 @@ if str(project_root) not in sys.path:
 
 import all_config as config
 
-# Configure Logging
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] DISTILLER: %(message)s')
 
-# Bypass Keras Lambda security restriction for trusted internal models
+# Bypass Security
 try:
     if hasattr(tf, 'keras'):
         tf.keras.config.enable_unsafe_deserialization()  # type: ignore
@@ -40,24 +40,38 @@ except Exception:
     pass
 
 class Distiller:
-    """
-    Independent service that monitors model folders and creates 
-    latent-space (feature extractor) versions of CV models 
-    across multiple frameworks (Keras, PyTorch, ONNX).
-    """
     def __init__(self):
         self.watch_map = config.DISTILL_MAP
         self.suffix = config.DISTILL_SUFFIX
-        # Supported extensions for CV models
         self.supported_extensions = [".keras", ".h5", ".pt", ".pth", ".onnx", ".pb"]
+        self.memory_file = file_path.parent / "distiller_memory.json"
+        self.memory = self.load_memory()
+
+    def load_memory(self):
+        if self.memory_file.exists():
+            try:
+                with open(self.memory_file, 'r') as f:
+                    mem = json.load(f)
+                logging.info(f"🧠 Loaded knowledge for {len(mem)} architectures.")
+                return mem
+            except Exception:
+                return {}
+        return {}
+
+    def get_fingerprint(self, model):
+        """Generates architectural hash."""
+        try:
+            sig = []
+            for l in model.layers:
+                # Use class name and output shape to identify architecture
+                sig.append(f"{l.__class__.__name__}:{str(l.output_shape)}")
+            full_sig = "|".join(sig)
+            return hashlib.md5(full_sig.encode()).hexdigest()
+        except Exception:
+            return None
 
     def cleanup_memory(self):
-        """
-        Aggressively flushes Keras sessions and invokes garbage collection 
-        to keep RAM usage low during idle sleep.
-        """
         try:
-            # Clear TensorFlow/Keras graph
             if hasattr(tf, 'keras'):
                 tf.keras.backend.clear_session()  # type: ignore
             elif 'keras' in globals():
@@ -65,21 +79,22 @@ class Distiller:
                 keras.backend.clear_session()
         except Exception:
             pass
-        
-        # Force Python garbage collection
         gc.collect()
 
     def perform_variance_check(self, model, framework="keras"):
-        """
-        Safety net: Passes dummy data through the distilled model to ensure 
-        it produces a diverse feature signal rather than constant values.
-        """
         try:
             if framework == "keras":
-                # Ensure we handle models with multiple inputs if necessary, 
-                # but standard CV models usually have one.
                 input_shape = model.input_shape[1:]
-                test_input = np.random.rand(5, *input_shape).astype(np.float32)
+                # Handle potential multi-channel inputs (like 18 channels)
+                if input_shape[-1] is None: c = 3 # fallback
+                else: c = input_shape[-1]
+                
+                # Construct safe shape
+                safe_shape = [5]
+                for dim in input_shape:
+                    safe_shape.append(dim if dim is not None else 224)
+                
+                test_input = np.random.rand(*safe_shape).astype(np.float32)
                 features = model.predict(test_input, verbose=0)
             elif framework == "pytorch" and torch is not None:
                 test_input = torch.rand(5, 3, 224, 224)
@@ -88,67 +103,63 @@ class Distiller:
             else:
                 return True
 
-            if features.shape[-1] <= 1:
-                logging.error(f"   -> Variance Check Failed: Output dimension too small ({features.shape[-1]}).")
+            if len(features.shape) > 1 and features.shape[-1] <= 1:
                 return False
+
+            # Flatten for variance check if 4D
+            if len(features.shape) > 2:
+                features = features.reshape(features.shape[0], -1)
 
             variance = np.var(features, axis=0).mean()
             if variance < 1e-6:
-                logging.error(f"   -> Variance Check Failed: Model produces static output (Var: {variance:.8f}).")
                 return False
 
-            logging.info(f"   -> Variance Check Passed (Signal Variance: {variance:.6f})")
             return True
-        except Exception as e:
-            logging.warning(f"   -> Variance Check skipped due to error: {e}")
+        except Exception:
             return True 
 
     def distill_keras(self, model_path):
-        """
-        Logic for Keras models using 'compile=False' to bypass custom loss 
-        errors and an iterative layer-stripping approach.
-        """
         try:
-            # FIX: Load with compile=False to ignore 'prediction_loss' or other custom objects
             logging.info(f"   -> [Keras] Loading {model_path.name} (compile=False)...")
             full_model = load_model(model_path, compile=False, safe_mode=False)
             
-            # Iterative Strategy: Walk backwards from the end of the model
-            # We skip the very last layer (usually the prediction head) automatically
+            # 1. SMART CHECK: Do we know this model?
+            fp = self.get_fingerprint(full_model)
+            if fp and fp in self.memory:
+                target_layer_name = self.memory[fp]
+                logging.info(f"🧠 Recognized architecture. Cutting at learned layer: '{target_layer_name}'")
+                try:
+                    return Model(inputs=full_model.input, outputs=full_model.get_layer(target_layer_name).output)  # type: ignore
+                except Exception as e:
+                    logging.warning(f"   -> Learned layer not found (model changed?): {e}. Fallback to auto.")
+            
+            # 2. AUTO CHECK: Iterative Fallback
             layers = full_model.layers  # type: ignore
-            max_depth = min(len(layers), 10) # Don't strip more than 10 layers deep
+            max_depth = min(len(layers), 15)
             
             for i in range(1, max_depth + 1):
                 target_layer = layers[-i]
-                
-                # We only want layers that output 2D/4D tensors (embeddings or feature maps)
-                # We avoid sticking to a layer that's just a Dropout or Activation if possible
                 if any(forbidden in target_layer.name.lower() for forbidden in ['dropout', 'input']):
                     continue
 
-                logging.info(f"   -> [Keras] Testing truncation at layer: {target_layer.name}...")
-                
+                logging.info(f"   -> [Auto] Testing cut at: {target_layer.name}...")
                 try:
                     distilled_model = Model(inputs=full_model.input, outputs=target_layer.output)  # type: ignore
-                    
                     if self.perform_variance_check(distilled_model, framework="keras"):
-                        logging.info(f"🟢 [Keras] Successful distillation at: {target_layer.name}")
+                        logging.info(f"🟢 [Auto] Successful distillation at: {target_layer.name}")
                         return distilled_model
-                except Exception as e:
-                    logging.warning(f"      -> Layer {target_layer.name} incompatible: {e}")
+                except Exception:
                     continue
 
             logging.error(f"🔴 [Keras] All truncation attempts failed for {model_path.name}")
             return None
         except Exception as e:
-            logging.error(f"🔴 Keras load failed even with compile=False: {e}")
+            logging.error(f"🔴 Keras load failed: {e}")
             return None
 
     def distill_pytorch(self, model_path):
-        """Logic for PyTorch models with iterative fallback."""
-        if torch is None:
-            logging.error("🔴 Cannot distill PyTorch model: 'torch' library not found.")
-            return None
+        # PyTorch logic remains the same (Manual stripping)
+        if torch is None: return None
         try:
             model = torch.load(model_path)
             if isinstance(model, nn.Module):  # type: ignore
@@ -156,17 +167,13 @@ class Distiller:
                     layers = list(model.children())[:-i]
                     latent_model = nn.Sequential(*layers)  # type: ignore
                     latent_model.eval()
-                    
-                    logging.info(f"   -> [PyTorch] Attempting truncation (stripped {i} layers)...")
                     if self.perform_variance_check(latent_model, framework="pytorch"):
                         return latent_model
             return None
-        except Exception as e:
-            logging.error(f"🔴 PyTorch distillation failed: {e}")
+        except Exception:
             return None
 
     def is_file_stable(self, filepath):
-        """Verifies file size hasn't changed in the last few seconds."""
         try:
             first_size = os.path.getsize(filepath)
             time.sleep(config.STABILITY_DELAY)
@@ -176,7 +183,9 @@ class Distiller:
             return False
 
     def process_model(self, model_file, target_file):
-        """Determines framework and executes distillation."""
+        # Refresh memory occasionally in case CLI updated it
+        self.memory = self.load_memory()
+        
         ext = model_file.suffix.lower()
         success = False
         
@@ -184,52 +193,38 @@ class Distiller:
             latent_model = self.distill_keras(model_file)
             if latent_model:
                 latent_model.save(target_file)
-                del latent_model # Remove local reference immediately
+                del latent_model 
                 success = True
-        
         elif ext in [".pt", ".pth"]:
             latent_model = self.distill_pytorch(model_file)
             if latent_model:
                 torch.save(latent_model, target_file)  # type: ignore
-                del latent_model # Remove local reference immediately
+                del latent_model
                 success = True
 
-        # Aggressively flush memory after work is done
         self.cleanup_memory()
         return success
 
     def run(self):
-        logging.info("🟢 Generalized Distiller Service Started. Monitoring model folders...")
-        
+        logging.info("🟢 Smart Distiller Service Started. Monitoring model folders...")
         while True:
             for src_dir, dest_dir in self.watch_map.items():
                 src_path = Path(src_dir)
                 dest_path = Path(dest_dir)
-
                 if not src_path.exists(): continue
-
                 for model_file in src_path.iterdir():
-                    if model_file.suffix.lower() not in self.supported_extensions:
-                        continue
+                    if model_file.suffix.lower() not in self.supported_extensions: continue
+                    if self.suffix in model_file.name: continue
                     
-                    if self.suffix in model_file.name:
-                        continue
-                        
                     distilled_name = model_file.stem + self.suffix + model_file.suffix
                     target_file = dest_path / distilled_name
 
-                    if target_file.exists():
-                        continue
-
-                    if not self.is_file_stable(model_file):
-                        logging.info(f"⏳ Waiting for {model_file.name} to finish writing...")
-                        continue
+                    if target_file.exists(): continue
+                    if not self.is_file_stable(model_file): continue
 
                     logging.info(f"✨ New {model_file.suffix} model detected: {model_file.name}.")
-                    
                     if self.process_model(model_file, target_file):
                         logging.info(f"💾 Distilled version saved: {distilled_name}")
-
             time.sleep(config.POLLING_INTERVAL)
 
 if __name__ == "__main__":
