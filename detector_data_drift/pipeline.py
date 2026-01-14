@@ -5,8 +5,7 @@ import keras
 from datetime import datetime
 from pathlib import Path
 
-# 1. Setup paths and handle project root for imports IMMEDIATELY
-# This must happen before importing internal modules like feature_extractor
+# Setup paths and handle project root for imports
 file_path = Path(__file__).resolve()
 project_root = file_path.parent.parent
 
@@ -14,7 +13,6 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 # Internal Sentinel Module Imports
-# Using relative imports or direct folder-level imports for local siblings
 try:
     import detector_data_drift.extractor as detector
     import detector_data_drift.analyzer as analyzer
@@ -34,98 +32,85 @@ def ensure_dirs():
     EMBEDDINGS_DIR.mkdir(parents=True, exist_ok=True)
 
 def print_drift_report(score, metrics_breakdown, num_baseline, num_incoming):
-    """
-    Prints a clean, formatted report to the console.
-    """
-    status = "FAIL" if score > config.DRIFT_THRESHOLD else "PASS"
-    color_code = "\033[91m" if status == "FAIL" else "\033[92m"
-    reset = "\033[0m"
-
-    print("\n" + "="*50)
-    print("         SENTINEL DATA DRIFT REPORT")
-    print("="*50)
-    print(f"Timestamp:         {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Backbone:          {config.EMBEDDING_MODEL_TYPE}")
-    print(f"Overall Status:    {color_code}{status}{reset}")
-    print("-" * 50)
-    print(f"Baseline Samples:  {num_baseline}")
-    print(f"Incoming Samples:  {num_incoming}")
-    print("-" * 50)
-    print(f"FINAL DRIFT SCORE: {score:.2f}%")
-    print(f"THRESHOLD:         {config.DRIFT_THRESHOLD:.2f}%")
-    print("-" * 50)
-    print("METRIC BREAKDOWN (Normalized 0-1 probability):")
-    for metric, val in metrics_breakdown.items():
-        print(f" -> {metric.capitalize():<12}: {val:.4f}")
+    """Prints a clean, formatted report to the console."""
+    threshold = getattr(config, 'DRIFT_THRESHOLD', 25.0)
+    status = "FAIL" if score > threshold else "PASS"
     
-    if status == "FAIL":
-        print("\n[!] WARNING: Significant distribution shift detected.")
-        print("    Consider retraining or investigating data source integrity.")
-    print("="*50 + "\n")
+    color_icon = "🔴" if status == "FAIL" else "🟢"
     
+    print("-" * 30)
+    print(f"📡 DATA DRIFT REPORT")
+    print("-" * 30)
+    print(f"Status:      {color_icon} {status}")
+    print(f"Drift Score: {score:.2f}%")
+    print(f"Baseline:    {num_baseline} samples")
+    print(f"Incoming:    {num_incoming} samples")
+    print("-" * 30)
+    print("Metrics Breakdown:")
+    for m, v in metrics_breakdown.items():
+        print(f" -> {m}: {v:.4f}")
+    print("-" * 30)
     return status
 
-def run_drift_check(incoming_path=None):
+def run_drift_analysis(baseline_path, incoming_path, force_recalc=False, latent_model_path=None):
     """
-    Orchestrates discovery, caching, extraction, and analysis.
-    Returns: (drift_score, status) or (None, "ERROR")
+    Executes the drift detection suite. 
+    Can use a specific distilled latent model if provided.
     """
     ensure_dirs()
-    incoming_path = incoming_path or config.INCOMING_DATA_PATH
     
-    print(f"\n🔍 Sentinel starting drift check...")
-    print(f"📁 Baseline: {config.ORIGINAL_DATA_PATH}")
-    print(f"📁 Incoming: {incoming_path}\n")
-
-    # 1. Discovery
-    baseline_files = detector.get_recursive_image_paths(config.ORIGINAL_DATA_PATH)
-    incoming_files = detector.get_recursive_image_paths(incoming_path)
-
-    if not baseline_files or not incoming_files:
-        print(f"\n❌ Error: Missing images. Baseline: {len(baseline_files)}, Incoming: {len(incoming_files)}")
-        return None, "ERROR"
-
-    baseline_emb = None
-    incoming_emb = None
-    model = None
-
     try:
-        # --- BASELINE HANDLING ---
-        if BASELINE_CACHE.exists():
-            print(f"\n📦 Found cached baseline embeddings at {BASELINE_CACHE.name}.")
-            baseline_emb = np.load(BASELINE_CACHE)
-            # Basic sanity check: does the embedding count match the image count?
-            if len(baseline_emb) != len(baseline_files):
-                print("⚠️  Cache mismatch (count). Re-extracting baseline...")
-                baseline_emb = None
+        # Check image counts for cache validation
+        baseline_files = detector.get_recursive_image_paths(baseline_path)
+        incoming_files = detector.get_recursive_image_paths(incoming_path)
         
-        if baseline_emb is None:
-            if model is None: model = detector.create_embedding_model()
-            print(f"\n📸 Extracting {len(baseline_files)} baseline images...")
-            baseline_emb = detector.extract_features_from_list(model, baseline_files)
-            np.save(BASELINE_CACHE, baseline_emb)
-            print(f"💾 Baseline embeddings saved to disk.")
+        if not baseline_files or not incoming_files:
+            print("🔴 Error: One of the data paths is empty or contains no supported files.")
+            return None, "ERROR"
 
-        # --- INCOMING HANDLING ---
-        run_incoming = True
-        if INCOMING_CACHE.exists():
-            print(f"\n📦 Found cached incoming embeddings at {INCOMING_CACHE.name}.")
-            # For automation (Sentinel Watch), we usually want to force fresh extraction 
-            # if we know data changed, but here we assume the cache logic holds.
-            # In a real scheduled run, you might force this.
-            incoming_emb = np.load(INCOMING_CACHE)
-            if len(incoming_emb) != len(incoming_files):
-                print("⚠️  Cache mismatch (count). Forcing re-extraction...")
-                run_incoming = True
+        # --- BASELINE EMBEDDINGS ---
+        model = None
+        run_baseline = force_recalc or not BASELINE_CACHE.exists()
+        
+        if not run_baseline:
+            baseline_emb = np.load(BASELINE_CACHE)
+            if len(baseline_emb) != len(baseline_files):
+                print("⚠️  Baseline cache count mismatch. Re-extracting...")
+                run_baseline = True
+        
+        if run_baseline:
+            if latent_model_path:
+                print(f"🟢 Loading Latent Distiller Model: {Path(latent_model_path).name}")
+                model = keras.models.load_model(latent_model_path, compile=False, safe_mode=False) # type: ignore
             else:
+                # If no latent model path is provided, extractor must handle default model creation
+                # Note: If extract_features requires a model, it must be passed here.
+                # We assume extract_features handles the logic.
+                model = None 
+            
+            print(f"📸 Extracting features for {len(baseline_files)} baseline samples...")
+            # Using the universal entry point 'extract_features'
+            baseline_emb = detector.extract_features(model, baseline_path)
+            np.save(BASELINE_CACHE, baseline_emb)
+            print(f"💾 Baseline embeddings saved.")
+
+        # --- INCOMING EMBEDDINGS ---
+        run_incoming = True
+        if not force_recalc and INCOMING_CACHE.exists():
+            incoming_emb = np.load(INCOMING_CACHE)
+            if len(incoming_emb) == len(incoming_files):
                 run_incoming = False
             
         if run_incoming:
-            if model is None: model = detector.create_embedding_model()
-            print(f"\n📸 Extracting {len(incoming_files)} incoming images...")
-            incoming_emb = detector.extract_features_from_list(model, incoming_files)
+            if model is None and latent_model_path:
+                print(f"🟢 Loading Latent Distiller Model: {Path(latent_model_path).name}")
+                model = keras.models.load_model(latent_model_path, compile=False, safe_mode=False) # type: ignore
+                    
+            print(f"📸 Extracting features for {len(incoming_files)} incoming samples...")
+            # Using the universal entry point 'extract_features'
+            incoming_emb = detector.extract_features(model, incoming_path)
             np.save(INCOMING_CACHE, incoming_emb)
-            print(f"💾 Incoming embeddings saved to disk.")
+            print(f"💾 Incoming embeddings saved.")
 
         # --- ANALYSIS ---
         print("\n⚖️  Calculating multi-metric distribution divergence...")
@@ -135,13 +120,21 @@ def run_drift_check(incoming_path=None):
         status = print_drift_report(final_percentage, metrics_breakdown, len(baseline_files), len(incoming_files))
         
         keras.backend.clear_session()
-        
         return final_percentage, status
         
     except Exception as e:
-        print(f"\n❌ Analysis failed: {e}")
+        print(f"\n🔴 Analysis failed: {e}")
+        import traceback
+        traceback.print_exc()
         return None, "ERROR"
 
 if __name__ == "__main__":
-    path_arg = sys.argv[1] if len(sys.argv) > 1 else None
-    run_drift_check(path_arg)
+    # Test run
+    baseline = config.ORIGINAL_DATA_PATH
+    incoming = config.INCOMING_DATA_PATH
+    
+    # Check for distilled production model in the config-defined directory
+    distilled_prod = list(config.PRODUCTION_DISTILLED_DIR.glob(f"*{config.DISTILL_SUFFIX}.keras"))
+    prod_path = str(distilled_prod[0]) if distilled_prod else None
+    
+    run_drift_analysis(baseline, incoming, force_recalc=True, latent_model_path=prod_path)
