@@ -1,7 +1,6 @@
 import os
 import sys
 import numpy as np
-import keras
 from datetime import datetime
 from pathlib import Path
 
@@ -31,11 +30,46 @@ def ensure_dirs():
     """Ensures the embedding directory exists."""
     EMBEDDINGS_DIR.mkdir(parents=True, exist_ok=True)
 
+def detect_domain(directory):
+    """
+    Scans the directory to determine the data domain (IMAGE, TEXT, etc).
+    """
+    path = Path(directory)
+    for f in path.rglob('*'):
+        if f.is_file():
+            ext = f.suffix.lower()
+            if ext in ['.jpg', '.jpeg', '.png', '.bmp', '.webp']:
+                return "IMAGE"
+            if ext in ['.txt', '.json', '.csv', '.md']:
+                return "TEXT"
+    return "UNKNOWN"
+
+def prepare_data_groups(directory, stack_size, domain):
+    """
+    Retrieves file paths and chunks them into groups based on specs provided by extractor.
+    """
+    if domain == "IMAGE":
+        raw_paths = detector.get_recursive_image_paths(directory)
+    else:
+        raw_paths = [str(p) for p in Path(directory).rglob('*') if p.is_file()]
+    
+    raw_paths = sorted(raw_paths)
+    
+    if stack_size <= 1:
+        return raw_paths
+        
+    grouped_data = []
+    for i in range(0, len(raw_paths), stack_size):
+        chunk = raw_paths[i:i + stack_size]
+        if len(chunk) == stack_size:
+            grouped_data.append(chunk)
+            
+    return grouped_data
+
 def print_drift_report(score, metrics_breakdown, num_baseline, num_incoming):
     """Prints a clean, formatted report to the console."""
     threshold = getattr(config, 'DRIFT_THRESHOLD', 25.0)
     status = "FAIL" if score > threshold else "PASS"
-    
     color_icon = "🔴" if status == "FAIL" else "🟢"
     
     print("-" * 30)
@@ -43,8 +77,8 @@ def print_drift_report(score, metrics_breakdown, num_baseline, num_incoming):
     print("-" * 30)
     print(f"Status:      {color_icon} {status}")
     print(f"Drift Score: {score:.2f}%")
-    print(f"Baseline:    {num_baseline} samples")
-    print(f"Incoming:    {num_incoming} samples")
+    print(f"Baseline:    {num_baseline} samples (stacks/units)")
+    print(f"Incoming:    {num_incoming} samples (stacks/units)")
     print("-" * 30)
     print("Metrics Breakdown:")
     for m, v in metrics_breakdown.items():
@@ -55,71 +89,73 @@ def print_drift_report(score, metrics_breakdown, num_baseline, num_incoming):
 def run_drift_analysis(baseline_path, incoming_path, force_recalc=False, latent_model_path=None):
     """
     Executes the drift detection suite. 
-    Can use a specific distilled latent model if provided.
+    Pipeline manages data prep; Extractor manages the model and feature generation.
     """
     ensure_dirs()
     
+    # 🔴 To avoid memory fragmentation, we use the extractor's model instance directly
+    model_instance = None
+    
     try:
-        # Check image counts for cache validation
-        baseline_files = detector.get_recursive_image_paths(baseline_path)
-        incoming_files = detector.get_recursive_image_paths(incoming_path)
+        # --- PHASE 1: SURVEY & SPECIFICATION ---
+        domain = detect_domain(baseline_path)
+        print(f"🔍 Detected Data Domain: {domain}")
+
+        # Request specs and model instance from Extractor
+        print(f"🛰️  Requesting model specifications from Extractor...")
+        model_instance, specs = detector.get_model_specs(latent_model_path)
         
-        if not baseline_files or not incoming_files:
-            print("🔴 Error: One of the data paths is empty or contains no supported files.")
+        if specs is None:
+            print("🔴 Error: Could not retrieve model specifications. Aborting.")
             return None, "ERROR"
 
-        # --- BASELINE EMBEDDINGS ---
-        model = None
+        stack_size = specs.get("stack_size", 1)
+        if stack_size > 1:
+            print(f"🧠 Smart Stacking Activated: Grouping {stack_size} units per input.")
+
+        # --- PHASE 2: DATA PREPARATION ---
+        baseline_groups = prepare_data_groups(baseline_path, stack_size, domain)
+        incoming_groups = prepare_data_groups(incoming_path, stack_size, domain)
+        
+        if not baseline_groups or not incoming_groups:
+            print("🔴 Error: One of the data paths is empty or yielded no valid groups.")
+            return None, "ERROR"
+
+        # --- PHASE 3: EXECUTION (EXTRACTOR) ---
         run_baseline = force_recalc or not BASELINE_CACHE.exists()
         
         if not run_baseline:
             baseline_emb = np.load(BASELINE_CACHE)
-            if len(baseline_emb) != len(baseline_files):
+            if len(baseline_emb) != len(baseline_groups):
                 print("⚠️  Baseline cache count mismatch. Re-extracting...")
                 run_baseline = True
         
         if run_baseline:
-            if latent_model_path:
-                print(f"🟢 Loading Latent Distiller Model: {Path(latent_model_path).name}")
-                model = keras.models.load_model(latent_model_path, compile=False, safe_mode=False) # type: ignore
-            else:
-                # If no latent model path is provided, extractor must handle default model creation
-                # Note: If extract_features requires a model, it must be passed here.
-                # We assume extract_features handles the logic.
-                model = None 
-            
-            print(f"📸 Extracting features for {len(baseline_files)} baseline samples...")
-            # Using the universal entry point 'extract_features'
-            baseline_emb = detector.extract_features(model, baseline_path)
+            print(f"📸 Extracting features for {len(baseline_groups)} baseline groups...")
+            # Use the already loaded model_instance and specs
+            baseline_emb = detector.extract_features(model_instance, baseline_groups, specs)
             np.save(BASELINE_CACHE, baseline_emb)
             print(f"💾 Baseline embeddings saved.")
 
-        # --- INCOMING EMBEDDINGS ---
         run_incoming = True
         if not force_recalc and INCOMING_CACHE.exists():
             incoming_emb = np.load(INCOMING_CACHE)
-            if len(incoming_emb) == len(incoming_files):
+            if len(incoming_emb) == len(incoming_groups):
                 run_incoming = False
             
         if run_incoming:
-            if model is None and latent_model_path:
-                print(f"🟢 Loading Latent Distiller Model: {Path(latent_model_path).name}")
-                model = keras.models.load_model(latent_model_path, compile=False, safe_mode=False) # type: ignore
-                    
-            print(f"📸 Extracting features for {len(incoming_files)} incoming samples...")
-            # Using the universal entry point 'extract_features'
-            incoming_emb = detector.extract_features(model, incoming_path)
+            print(f"📸 Extracting features for {len(incoming_groups)} incoming groups...")
+            incoming_emb = detector.extract_features(model_instance, incoming_groups, specs)
             np.save(INCOMING_CACHE, incoming_emb)
             print(f"💾 Incoming embeddings saved.")
 
-        # --- ANALYSIS ---
+        # --- PHASE 4: ANALYSIS ---
         print("\n⚖️  Calculating multi-metric distribution divergence...")
-        drift_prob, metrics_breakdown = analyzer.analyze_drift(baseline_emb, incoming_emb) # type: ignore
+        drift_prob, metrics_breakdown = analyzer.analyze_drift(baseline_emb, incoming_emb)
         
         final_percentage = drift_prob * 100
-        status = print_drift_report(final_percentage, metrics_breakdown, len(baseline_files), len(incoming_files))
+        status = print_drift_report(final_percentage, metrics_breakdown, len(baseline_groups), len(incoming_groups))
         
-        keras.backend.clear_session()
         return final_percentage, status
         
     except Exception as e:
@@ -127,14 +163,23 @@ def run_drift_analysis(baseline_path, incoming_path, force_recalc=False, latent_
         import traceback
         traceback.print_exc()
         return None, "ERROR"
+    
+    finally:
+        # Cleanup model instance and clear Keras session at the very end
+        if model_instance is not None:
+            import keras
+            del model_instance
+            keras.backend.clear_session()
 
 if __name__ == "__main__":
-    # Test run
     baseline = config.ORIGINAL_DATA_PATH
     incoming = config.INCOMING_DATA_PATH
     
-    # Check for distilled production model in the config-defined directory
-    distilled_prod = list(config.PRODUCTION_DISTILLED_DIR.glob(f"*{config.DISTILL_SUFFIX}.keras"))
-    prod_path = str(distilled_prod[0]) if distilled_prod else None
+    distilled_models = list(config.PRODUCTION_DISTILLED_DIR.glob(f"*{config.DISTILL_SUFFIX}.keras"))
+    if distilled_models:
+        distilled_models.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+        prod_path = str(distilled_models[0])
+    else:
+        prod_path = None
     
     run_drift_analysis(baseline, incoming, force_recalc=True, latent_model_path=prod_path)
