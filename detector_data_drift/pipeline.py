@@ -151,7 +151,7 @@ def run_drift_analysis(baseline_path, incoming_path, force_recalc=False, latent_
 
         # --- PHASE 4: ANALYSIS ---
         print("\n⚖️  Calculating multi-metric distribution divergence...")
-        drift_prob, metrics_breakdown = analyzer.analyze_drift(baseline_emb, incoming_emb)
+        drift_prob, metrics_breakdown = analyzer.analyze_drift(baseline_emb, incoming_emb) # type: ignore
         
         final_percentage = drift_prob * 100
         status = print_drift_report(final_percentage, metrics_breakdown, len(baseline_groups), len(incoming_groups))
