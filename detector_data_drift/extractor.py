@@ -70,7 +70,7 @@ def get_model_specs(model_path):
         logging.info(f"🟢 Loading model for specification: {Path(model_path).name}")
         model = keras.models.load_model(model_path, compile=False, safe_mode=False)
         
-        shape = model.input_shape
+        shape = model.input_shape # type: ignore
         if isinstance(shape, list): shape = shape[0]
         
         target_h = shape[1] if shape[1] else 224
