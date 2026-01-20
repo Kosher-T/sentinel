@@ -171,15 +171,31 @@ def run_drift_analysis(baseline_path, incoming_path, force_recalc=False, latent_
             del model_instance
             keras.backend.clear_session()
 
-if __name__ == "__main__":
+def run_drift_check():
+    """
+    Sentinel Watch Wrapper: Automatically locates the latest distilled 
+    production model and runs analysis using configured paths.
+    """
     baseline = config.ORIGINAL_DATA_PATH
     incoming = config.INCOMING_DATA_PATH
     
+    # 🔍 Locate the latest distilled production model
     distilled_models = list(config.PRODUCTION_DISTILLED_DIR.glob(f"*{config.DISTILL_SUFFIX}.keras"))
+    
     if distilled_models:
+        # Sort by modification time to get the newest model
         distilled_models.sort(key=lambda x: x.stat().st_mtime, reverse=True)
         prod_path = str(distilled_models[0])
+        print(f"📡 Sentinel: Using latest distilled model: {distilled_models[0].name}")
     else:
         prod_path = None
-    
-    run_drift_analysis(baseline, incoming, force_recalc=True, latent_model_path=prod_path)
+        print("⚠️ Sentinel: No distilled production model found. Using default extractor.")
+
+    # Execute the curated analysis pipeline
+    # force_recalc=True ensures we always look at the fresh 24-hour window
+    return run_drift_analysis(baseline, incoming, force_recalc=True, latent_model_path=prod_path)
+
+if __name__ == "__main__":
+    # Your manual testing block remains the same
+    # But now it could also just call run_drift_check()
+    run_drift_check()
