@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import numpy as np
 from datetime import datetime
 from pathlib import Path
@@ -21,14 +22,31 @@ except ImportError:
 
 import all_config as config
 
-# Define persistence path
+# Define persistence paths
 EMBEDDINGS_DIR = config.BASE_DATA_DIR / "data_drift" / "embeddings"
 BASELINE_CACHE = EMBEDDINGS_DIR / "baseline_embeddings.npy"
 INCOMING_CACHE = EMBEDDINGS_DIR / "incoming_embeddings.npy"
+METADATA_CACHE = EMBEDDINGS_DIR / "folder_metadata.json" #
 
 def ensure_dirs():
     """Ensures the embedding directory exists."""
     EMBEDDINGS_DIR.mkdir(parents=True, exist_ok=True)
+
+def get_directory_signature(directory):
+    """
+    Creates a unique signature based on folder mtime and file count 
+    to detect content changes without hashing every file.
+    """
+    path = Path(directory)
+    # Get all files recursively to ensure we catch changes in sequence subfolders
+    files = [f for f in path.rglob('*') if f.is_file()]
+    
+    if not files:
+        return "empty"
+        
+    # Get the latest modification time among all files
+    latest_mtime = max(f.stat().st_mtime for f in files)
+    return f"{len(files)}_{latest_mtime}" #
 
 def detect_domain(directory):
     """
@@ -89,11 +107,20 @@ def print_drift_report(score, metrics_breakdown, num_baseline, num_incoming):
 def run_drift_analysis(baseline_path, incoming_path, force_recalc=False, latent_model_path=None):
     """
     Executes the drift detection suite. 
-    Pipeline manages data prep; Extractor manages the model and feature generation.
+    Now includes folder metadata checking to skip redundant extractions.
     """
     ensure_dirs()
     
-    # 🔴 To avoid memory fragmentation, we use the extractor's model instance directly
+    # 📂 Load existing metadata record
+    if METADATA_CACHE.exists():
+        try:
+            with open(METADATA_CACHE, 'r') as f:
+                meta_record = json.load(f)
+        except:
+            meta_record = {}
+    else:
+        meta_record = {} #
+    
     model_instance = None
     
     try:
@@ -101,7 +128,6 @@ def run_drift_analysis(baseline_path, incoming_path, force_recalc=False, latent_
         domain = detect_domain(baseline_path)
         print(f"🔍 Detected Data Domain: {domain}")
 
-        # Request specs and model instance from Extractor
         print(f"🛰️  Requesting model specifications from Extractor...")
         model_instance, specs = detector.get_model_specs(latent_model_path)
         
@@ -121,37 +147,53 @@ def run_drift_analysis(baseline_path, incoming_path, force_recalc=False, latent_
             print("🔴 Error: One of the data paths is empty or yielded no valid groups.")
             return None, "ERROR"
 
-        # --- PHASE 3: EXECUTION (EXTRACTOR) ---
-        run_baseline = force_recalc or not BASELINE_CACHE.exists()
+        # --- PHASE 3: EXECUTION (SMART CACHING) ---
+        
+        # Check Baseline
+        base_sig = get_directory_signature(baseline_path)
+        run_baseline = force_recalc or not BASELINE_CACHE.exists() or meta_record.get("baseline") != base_sig
         
         if not run_baseline:
             baseline_emb = np.load(BASELINE_CACHE)
             if len(baseline_emb) != len(baseline_groups):
                 print("⚠️  Baseline cache count mismatch. Re-extracting...")
                 run_baseline = True
+            else:
+                print("🟢 Using cached baseline embeddings (No changes detected).") #
         
         if run_baseline:
             print(f"📸 Extracting features for {len(baseline_groups)} baseline groups...")
-            # Use the already loaded model_instance and specs
             baseline_emb = detector.extract_features(model_instance, baseline_groups, specs)
             np.save(BASELINE_CACHE, baseline_emb)
+            meta_record["baseline"] = base_sig
             print(f"💾 Baseline embeddings saved.")
 
-        run_incoming = True
-        if not force_recalc and INCOMING_CACHE.exists():
+        # Check Incoming
+        inc_sig = get_directory_signature(incoming_path)
+        run_incoming = force_recalc or not INCOMING_CACHE.exists() or meta_record.get("incoming") != inc_sig
+        
+        if not run_incoming:
             incoming_emb = np.load(INCOMING_CACHE)
-            if len(incoming_emb) == len(incoming_groups):
-                run_incoming = False
+            if len(incoming_emb) != len(incoming_groups):
+                print("⚠️  Incoming cache count mismatch. Re-extracting...")
+                run_incoming = True
+            else:
+                print("🟢 Using cached incoming embeddings (No changes detected).") #
             
         if run_incoming:
             print(f"📸 Extracting features for {len(incoming_groups)} incoming groups...")
             incoming_emb = detector.extract_features(model_instance, incoming_groups, specs)
             np.save(INCOMING_CACHE, incoming_emb)
+            meta_record["incoming"] = inc_sig
             print(f"💾 Incoming embeddings saved.")
+
+        # 💾 Update metadata on disk
+        with open(METADATA_CACHE, 'w') as f:
+            json.dump(meta_record, f) #
 
         # --- PHASE 4: ANALYSIS ---
         print("\n⚖️  Calculating multi-metric distribution divergence...")
-        drift_prob, metrics_breakdown = analyzer.analyze_drift(baseline_emb, incoming_emb) # type: ignore
+        drift_prob, metrics_breakdown = analyzer.analyze_drift(baseline_emb, incoming_emb)  # type: ignore
         
         final_percentage = drift_prob * 100
         status = print_drift_report(final_percentage, metrics_breakdown, len(baseline_groups), len(incoming_groups))
@@ -165,7 +207,6 @@ def run_drift_analysis(baseline_path, incoming_path, force_recalc=False, latent_
         return None, "ERROR"
     
     finally:
-        # Cleanup model instance and clear Keras session at the very end
         if model_instance is not None:
             import keras
             del model_instance
@@ -179,11 +220,9 @@ def run_drift_check():
     baseline = config.ORIGINAL_DATA_PATH
     incoming = config.INCOMING_DATA_PATH
     
-    # 🔍 Locate the latest distilled production model
     distilled_models = list(config.PRODUCTION_DISTILLED_DIR.glob(f"*{config.DISTILL_SUFFIX}.keras"))
     
     if distilled_models:
-        # Sort by modification time to get the newest model
         distilled_models.sort(key=lambda x: x.stat().st_mtime, reverse=True)
         prod_path = str(distilled_models[0])
         print(f"📡 Sentinel: Using latest distilled model: {distilled_models[0].name}")
@@ -191,11 +230,8 @@ def run_drift_check():
         prod_path = None
         print("⚠️ Sentinel: No distilled production model found. Using default extractor.")
 
-    # Execute the curated analysis pipeline
-    # force_recalc=True ensures we always look at the fresh 24-hour window
-    return run_drift_analysis(baseline, incoming, force_recalc=True, latent_model_path=prod_path)
+    # Note: force_recalc is False by default here to leverage the new metadata cache
+    return run_drift_analysis(baseline, incoming, force_recalc=False, latent_model_path=prod_path)
 
 if __name__ == "__main__":
-    # Your manual testing block remains the same
-    # But now it could also just call run_drift_check()
     run_drift_check()
