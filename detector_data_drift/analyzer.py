@@ -25,7 +25,7 @@ def mmd_linear(X, Y):
 def analyze_drift(baseline, current):
     """
     Compares two embedding distributions. 
-    Heavily weights Cosine Distance per user preference.
+    Adjusted to be less sensitive to magnitude shifts and trust Cosine more.
     """
     if len(baseline.shape) > 2:
         baseline = baseline.reshape(baseline.shape[0], -1)
@@ -47,20 +47,19 @@ def analyze_drift(baseline, current):
 
     mmd_val = mmd_linear(baseline, current)
 
-    # --- STEP 2: Normalization ---
-    s_wd = 1 - np.exp(-0.2 * avg_wd) 
-    s_kl = 1 - np.exp(-0.5 * avg_kl)
-    # Increased sensitivity for Cosine since the raw values are often very small
-    s_cos = 1 - np.exp(-10.0 * cos_dist) 
-    s_mmd = 1 - np.exp(-1.0 * mmd_val)
+    # --- STEP 2: Normalization (The Squashing Functions) ---
+    # Coefficients adjusted to handle larger raw values without hitting 1.0 immediately
+    s_wd = 1 - np.exp(-0.05 * avg_wd)   # Was -0.2
+    s_kl = 1 - np.exp(-0.2 * avg_kl)    # Was -0.5
+    s_cos = 1 - np.exp(-10.0 * cos_dist) # Increased sensitivity to capture small changes
+    s_mmd = 1 - np.exp(-0.01 * mmd_val)
 
     # --- STEP 3: Weighted Ensembling (Cosine Majority) ---
-    # Giving Cosine 70% of the vote
     weights = {
-        "Wasserstein": 0.10,
+        "Wasserstein": 0.04,
         "KL_Div": 0.05,
-        "Cosine_Centroid": 0.70,
-        "Linear_MMD": 0.15
+        "Cosine_Centroid": 0.90,
+        "Linear_MMD": 0.01
     }
     
     drift_probability = (
