@@ -16,6 +16,7 @@ def kl_divergence(p_samples, q_samples, bins=50):
     
     p_hist += 1e-10
     q_hist += 1e-10
+    
     return entropy(p_hist, q_hist)
 
 def mmd_linear(X, Y):
