@@ -10,3 +10,4 @@ data/
 *.zip
 *.json
 *.webp
+*.npy
