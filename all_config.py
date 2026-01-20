@@ -44,7 +44,7 @@ EMBEDDINGS_ROOT = MODEL_DECAY_ROOT / "embeddings"
 
 # --- DRIFT & DECAY THRESHOLDS ---
 DECAY_THRESHOLD = 5.0  # % drop in Golden Set performance (Wasserstein distance)
-DRIFT_THRESHOLD = 7.0  # % distance limit for incoming production data
+DRIFT_THRESHOLD = 26.4  # % distance limit for incoming production data
 
 # --- CONTINUOUS MONITORING SETTINGS ---
 MONITOR_SCHEDULE = "0 */6 * * *" # Cron: Every 6 hours
