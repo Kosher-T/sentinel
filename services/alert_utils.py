@@ -33,6 +33,11 @@ SMTP_USER = "29b057e9b13807"
 SMTP_PASSWORD = "22a33396821f85"
 RECIPIENT_EMAIL = "itorousa@gmail.com"
 
+# Brand Assets
+BRAND_COLOR = "#00E5FF" # Electric Cyan
+FONT_STACK = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
+MONO_STACK = "'JetBrains Mono', 'Fira Code', 'Courier New', monospace"
+
 class SentinelAlert:
     def __init__(self):
         self.state = self._load_state(STATE_FILE, default={
@@ -66,11 +71,11 @@ class SentinelAlert:
         return ""
 
     def _get_theme(self, level):
-        """Returns (AccentColor, SecondaryColor, Label)"""
-        if level == 3: return "#FF3B30", "#451a1a", "CRITICAL FAILURE"
-        if level == 2: return "#FFCC00", "#3d361c", "SYSTEM WARNING"
-        if level == 1: return "#34C759", "#1a301f", "SYSTEM NOMINAL"
-        return "#8E8E93", "#2c2c2e", "SYSTEM LOG"
+        """Returns (AccentColor, GlowColor, Label)"""
+        if level == 3: return "#FF3B30", "rgba(255, 59, 48, 0.1)", "CRITICAL_GATE_FAILURE"
+        if level == 2: return "#FFCC00", "rgba(255, 204, 0, 0.1)", "ANOMALY_DETECTED"
+        if level == 1: return BRAND_COLOR, "rgba(0, 229, 255, 0.1)", "SYSTEM_NOMINAL"
+        return "#8E8E93", "rgba(142, 142, 147, 0.1)", "SYSTEM_LOG"
 
     def _send_system_notification(self, title, message):
         try:
@@ -87,51 +92,66 @@ class SentinelAlert:
             logging.error(f"System notification failed: {e}")
 
     def _generate_email_html(self, level, title, message, metrics):
-        accent_color, bg_accent, label = self._get_theme(level)
+        accent_color, glow_bg, label = self._get_theme(level)
         
-        # Build Metrics Cards
+        # Build Terminal Metrics
         metrics_html = ""
         if metrics:
-            cards = ""
+            rows = ""
             for k, v in metrics.items():
-                cards += f"""
-                <div style="display: inline-block; width: 45%; margin: 5px; padding: 10px; background-color: #1c1c1e; border-radius: 4px; border-left: 2px solid {accent_color};">
-                    <div style="font-size: 10px; color: #8e8e93; text-transform: uppercase;">{k.replace('_', ' ')}</div>
-                    <div style="font-size: 16px; color: #ffffff; font-family: 'Courier New', Courier, monospace; font-weight: bold;">{v}</div>
-                </div>
+                rows += f"""
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                    <td style="padding: 12px 0; color: #8e8e93; font-size: 11px; text-transform: uppercase; text-align: left;">{k.replace('_', ' ')}</td>
+                    <td style="padding: 12px 0; color: {accent_color}; font-family: {MONO_STACK}; font-weight: bold; text-align: right;">{v}</td>
+                </tr>
                 """
-            metrics_html = f"<div style='margin-top: 20px; text-align: center;'>{cards}</div>"
-
-        # Modern Font Stack (Prioritizes cleaner sans-serifs similar to Calibri/Segoe)
-        font_stack = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
+            metrics_html = f"""
+            <div style="background: rgba(28, 28, 30, 0.6); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; margin-top: 25px; overflow: hidden;">
+                <div style="padding: 10px 15px; background: rgba(255,255,255,0.03); border-bottom: 1px solid rgba(255,255,255,0.1); font-size: 10px; color: #636366; letter-spacing: 1px; font-weight: bold; text-transform: uppercase;">
+                    Terminal Data Output
+                </div>
+                <div style="padding: 0 15px;">
+                    <table style="width: 100%; border-collapse: collapse;">
+                        {rows}
+                    </table>
+                </div>
+            </div>
+            """
 
         html = f"""
+        <!DOCTYPE html>
         <html>
-            <body style="background-color: #000000; padding: 20px; font-family: {font_stack};">
-                <div style="max-width: 550px; margin: 0 auto; background-color: #121212; border-radius: 12px; overflow: hidden; border: 1px solid #2c2c2e; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+            <head>
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            </head>
+            <body style="background-color: #050505; padding: 20px 0; font-family: {FONT_STACK}; margin: 0;">
+                <div style="max-width: 550px; width: 92%; margin: 20px auto; background-color: #0f0f0f; border-radius: 16px; overflow: hidden; border: 1px solid #222; box-shadow: 0 20px 40px rgba(0,0,0,0.8);">
                     
-                    <!-- Top Accent Bar -->
-                    <div style="height: 4px; background-color: {accent_color};"></div>
-                    
-                    <!-- Header Area -->
-                    <div style="padding: 30px 20px; text-align: center; background-color: #121212;">
-                        <div style="display: inline-block; padding: 4px 12px; border-radius: 20px; background-color: {bg_accent}; color: {accent_color}; font-size: 11px; font-weight: bold; letter-spacing: 1px; margin-bottom: 15px;">
+                    <!-- Aperture Gate Header -->
+                    <div style="padding: 40px 20px 25px 20px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.05);">
+                        <div style="font-family: {MONO_STACK}; color: #444; font-size: 11px; letter-spacing: 5px; margin-bottom: 12px; text-transform: uppercase;">
+                            |— Sentinel —|
+                        </div>
+                        <div style="display: inline-block; padding: 5px 14px; border-radius: 4px; background-color: {glow_bg}; color: {accent_color}; font-size: 10px; font-family: {MONO_STACK}; font-weight: bold; border: 1px solid {accent_color}; letter-spacing: 0.5px;">
                             {label}
                         </div>
-                        <h1 style="color: #ffffff; margin: 0; font-size: 24px; letter-spacing: -0.5px;">{title.split('] ')[-1] if ']' in title else title}</h1>
+                        <h1 style="color: #ffffff; margin-top: 25px; margin-bottom: 0; font-size: 24px; font-weight: 300; letter-spacing: -0.5px; line-height: 1.2;">
+                            {title.split('] ')[-1] if ']' in title else title}
+                        </h1>
                     </div>
                     
-                    <!-- Message Body -->
-                    <div style="padding: 0 40px 30px 40px; color: #d1d1d6; font-size: 15px; line-height: 1.6; text-align: center;">
-                        {message}
+                    <!-- Content Area (Glass Content) -->
+                    <div style="padding: 30px 10% 40px 10%; background: linear-gradient(180deg, rgba(255,255,255,0.02) 0%, rgba(255,255,255,0) 100%);">
+                        <p style="color: #a1a1aa; font-size: 15px; line-height: 1.6; text-align: center; margin: 0 auto; max-width: 400px;">
+                            {message}
+                        </p>
                         {metrics_html}
                     </div>
                     
                     <!-- Footer -->
-                    <div style="background-color: #1c1c1e; padding: 20px; text-align: center; border-top: 1px solid #2c2c2e;">
-                        <div style="font-size: 11px; color: #636366; letter-spacing: 0.5px;">
-                            SENTINEL_WATCH ENGINE v1.0<br>
-                            {datetime.now().strftime('%d %b %Y | %H:%M:%S').upper()}
+                    <div style="padding: 25px; text-align: center; background: #0a0a0a; border-top: 1px solid rgba(255,255,255,0.05);">
+                        <div style="font-family: {MONO_STACK}; font-size: 9px; color: #444; letter-spacing: 1px;">
+                            SIGNAL_ENCRYPTION_ID :: {datetime.now().strftime('%H:%M:%S_UTC')}
                         </div>
                     </div>
                 </div>
@@ -150,7 +170,7 @@ class SentinelAlert:
         try:
             msg = MIMEMultipart("alternative")
             msg["Subject"] = title
-            msg["From"] = f"Sentinel Watch <{SMTP_USER}>"
+            msg["From"] = f"Sentinel Engine <{SMTP_USER}>"
             msg["To"] = RECIPIENT_EMAIL
             msg.attach(MIMEText(html_content, "html"))
 
@@ -158,14 +178,14 @@ class SentinelAlert:
                 server.starttls()
                 server.login(SMTP_USER, SMTP_PASSWORD)
                 server.sendmail(SMTP_USER, RECIPIENT_EMAIL, msg.as_string())
-            logging.info(f"📧 Transmission Successful: {title}")
+            logging.info(f"📧 Signal Broadcast Successful: {title}")
         except Exception as e:
-            logging.error(f"Transmission Failure: {e}")
+            logging.error(f"❌ Broadcast Interrupted: {e}")
 
     def fire(self, level, event_type, message, metrics=None):
         emoji = self._get_emoji(level, event_type)
-        title_prefix = {1: "SUCCESS", 2: "WARNING", 3: "CRITICAL"}.get(level, "ALERT")
-        title = f"{emoji} [SENTINEL: {title_prefix}]"
+        title_prefix = {1: "OK", 2: "WARN", 3: "CRIT"}.get(level, "LOG")
+        title = f"{emoji} [SENTINEL:{title_prefix}]"
         
         notify_msg = message
         if metrics:
@@ -186,13 +206,14 @@ class SentinelAlert:
                     self._save_state(STATE_FILE, self.state)
         
         if should_email:
-            email_subject = f"{title} - {event_type.replace('_', ' ').title()}"
+            # Reverted to original multi-info format, but removed the "- " hyphen
+            email_subject = f"{title} {event_type.replace('_', ' ').title()}"
             self._send_email(level, email_subject, message, metrics)
 
 
 if __name__ == "__main__":
-    print("\n⚡ SENTINEL SIGNAL TEST ⚡")
-    print("-------------------------")
+    print("\n📡 INITIALIZING SIGNAL BROADCAST TEST 📡")
+    print("-----------------------------------------")
     
     cycle_idx = 0
     if TEST_STATE_FILE.exists():
@@ -206,25 +227,25 @@ if __name__ == "__main__":
         {
             "level": 1, 
             "event": "deployment", 
-            "msg": "New Challenger Model has successfully replaced Production instances.", 
-            "metrics": {"train_loss": 0.045, "decay": "1.2%", "version": "v2.0.4"}
+            "msg": "Challenger model verification successful. Production instance swap completed.", 
+            "metrics": {"loss": 0.045, "variance": "1.2%", "node_id": "SN-09"}
         },
         {
             "level": 2, 
             "event": "retraining", 
-            "msg": "Performance drift detected in recent data windows. Automated retraining is now active.", 
-            "metrics": {"drift_window": "4/5", "score": 0.45}
+            "msg": "Significant performance drift detected. Triggering automated retraining sequence.", 
+            "metrics": {"fail_ratio": "4/5", "drift": 0.45}
         },
         {
             "level": 3, 
             "event": "decay_fail", 
-            "msg": "Gatekeeper Alert: Challenger model failed the final decay check. Deployment has been blocked to protect production integrity.", 
-            "metrics": {"decay_score": "8.5%", "limit": "5.0%"}
+            "msg": "Gatekeeper Rejection: Challenger model shows unacceptable output variance. Deployment halted.", 
+            "metrics": {"decay": "8.5%", "threshold": "5.0%"}
         }
     ]
 
     current_scenario = scenarios[cycle_idx % len(scenarios)]
-    print(f"Broadcasting: {current_scenario['event'].upper()}")
+    print(f"Scenario: {current_scenario['event'].upper()}")
     
     alert = SentinelAlert()
     alert.fire(
@@ -237,5 +258,5 @@ if __name__ == "__main__":
     with open(TEST_STATE_FILE, 'w') as f:
         json.dump({"index": cycle_idx + 1}, f)
 
-    print("-------------------------")
-    print("✅ Broadcast Complete.")
+    print("-----------------------------------------")
+    print("✅ Broadcast Test Concluded.")
