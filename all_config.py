@@ -52,6 +52,13 @@ RETRAIN_TRIGGER_COUNT = 5        # Consecutive fails required to trigger an auto
 DRIFT_FAILURE_RATIO = 0.6        # 60% failure in recent window triggers system alert
 TIMEFRAME_WINDOW = 5             # Number of past timeframes to consider for the failure ratio
 
+# --- EXECUTION ENGINE SETTINGS ---
+# Determines the order of failover for training jobs
+EXECUTION_DRIVERS_PRIORITY = ["LOCAL"] # Options: "LOCAL", "AWS", "GCP"
+RETRAINING_SCRIPT = PROJECT_ROOT / "mock_train.py"
+EXECUTION_TIMEOUT = 3600               # 1 hour in seconds
+EXPECTED_CHALLENGER_PATH = FRESH_MODEL_PATH / "challenger_v2.pth"
+
 # --- DATABASE & LOGGING (For Dashboard & Persistence) ---
 DRIFT_HISTORY_DB = DRIFT_MONITOR_ROOT / "drift_history.db" # Updated to .db to match dashboard
 RETRAIN_LOG = DRIFT_MONITOR_ROOT / "retrain_events.json"
