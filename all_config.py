@@ -1,4 +1,4 @@
-# This module defines the parameters for the VFI model being monitored.
+# This module defines the parameters for the model being monitored.
 # If you want to switch backbones (e.g., from MobileNetV2 to VGG16), update this file.
 
 from pathlib import Path
