@@ -6,6 +6,15 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from datetime import datetime
 
+# Import global configs
+from all_config import (
+    EXECUTION_DRIVERS_PRIORITY,
+    RETRAINING_SCRIPT,
+    EXECUTION_TIMEOUT,
+    EXPECTED_CHALLENGER_PATH,
+    INCOMING_DATA_PATH
+)
+
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] SENTINEL_EXEC: %(message)s')
 
@@ -86,22 +95,22 @@ class LocalDriver(BaseDriver):
             if Path(self.artifact_path).exists():  #type: ignore
                 return True, self.artifact_path, None
             else:
-                return False, None, "Training finished but no model file found."
+                return False, None, f"Training finished but no model file found at {self.artifact_path}."
         
         _, stderr = self.process.communicate()
         return False, None, f"Exit Code {exit_code}: {stderr}"
 
 class ExecutionEngine:
     """The Traffic Controller / Dispatcher."""
-    def __init__(self, drivers_priority=["LOCAL"]):
+    def __init__(self, drivers_priority=EXECUTION_DRIVERS_PRIORITY):
         self.drivers_priority = drivers_priority
         self.active_driver = None
         self.config = {
-            "expected_output": "models/challenger_v2.pth",
-            "timeout": 3600 # 1 hour
+            "expected_output": str(EXPECTED_CHALLENGER_PATH),
+            "timeout": EXECUTION_TIMEOUT
         }
 
-    def run_training(self, script_path, data_path):
+    def run_training(self, script_path=RETRAINING_SCRIPT, data_path=INCOMING_DATA_PATH):
         """
         The main entry point for Sentinel. Handles Failover logic.
         """
@@ -144,10 +153,8 @@ class ExecutionEngine:
 
 # --- MOCK TESTER ---
 if __name__ == "__main__":
-    # Ensure a local directory 'data/drift_shard' exists for testing directory mode
-    # or a file 'data/drifted_data.csv' exists for testing file mode.
-    engine = ExecutionEngine(drivers_priority=["LOCAL"])
-    success, model, error = engine.run_training("mock_train.py", "C:\\Code\\Code\\Python\\frame_generation_engine\\sentinel\\data\\data_drift\\incoming_data")
+    engine = ExecutionEngine()
+    success, model, error = engine.run_training()
     if success:
         print(f"✅ SUCCESS: New model at {model}")
     else:
