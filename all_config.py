@@ -32,9 +32,9 @@ DRIFT_MONITOR_ROOT = PROJECT_ROOT / "data" / "data_drift"
 
 # --- MODEL PATHS ---
 # Directories where the latest 'Fresh' and 'Old' models are stored for decay comparison
-DATA_PATH = PROJECT_ROOT / "data" / "golden_set_septuplets" / "models"
-OLD_MODEL_PATH = DATA_PATH / "production"
-FRESH_MODEL_PATH = DATA_PATH / "challenger"
+MODEL_PATH = PROJECT_ROOT / "models"
+OLD_MODEL_PATH = MODEL_PATH / "production"
+FRESH_MODEL_PATH = MODEL_PATH / "challenger"
 
 # --- RESULTS & EMBEDDINGS (DECAY PIPELINE) ---
 # Intermediate outputs for the decay pipeline
