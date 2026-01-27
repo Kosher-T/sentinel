@@ -37,7 +37,7 @@ class LocalDriver(BaseDriver):
         self.stdout = ""
         self.artifact_path = None
 
-    def start(self, script_path, data_path, config):
+    def start(self, script_path, data_path, config):  #type: ignore
         logging.info("🟢 Initializing Local Execution Environment...")
         
         data_p = Path(data_path)
@@ -65,25 +65,25 @@ class LocalDriver(BaseDriver):
             logging.error(f"🔴 Local Start Failed: {e}")
             return False
 
-    def is_running(self):
+    def is_running(self):  #type: ignore
         if not self.process: return False
         return self.process.poll() is None
 
-    def get_logs(self):
+    def get_logs(self):  #type: ignore
         # Capturing non-blocking output
         if self.process and self.process.stdout:
             line = self.process.stdout.readline()
             if line: return line.strip()
         return None
 
-    def finalize(self):
+    def finalize(self):  #type: ignore
         if not self.process:
             return False, None, "Process never started."
         
         exit_code = self.process.wait()
         if exit_code == 0:
             # Check if the model actually exists
-            if Path(self.artifact_path).exists():
+            if Path(self.artifact_path).exists():  #type: ignore
                 return True, self.artifact_path, None
             else:
                 return False, None, "Training finished but no model file found."
@@ -129,8 +129,8 @@ class ExecutionEngine:
         """Polls the driver until completion."""
         start_time = time.time()
         
-        while self.active_driver.is_running():
-            log = self.active_driver.get_logs()
+        while self.active_driver.is_running():  #type: ignore
+            log = self.active_driver.get_logs()  #type: ignore
             if log:
                 logging.info(f"[TRAINER]: {log}")
             
@@ -140,7 +140,7 @@ class ExecutionEngine:
             
             time.sleep(1) # Don't burn the CPU polling
 
-        return self.active_driver.finalize()
+        return self.active_driver.finalize()  #type: ignore
 
 # --- MOCK TESTER ---
 if __name__ == "__main__":
