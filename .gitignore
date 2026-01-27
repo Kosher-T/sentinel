@@ -3,6 +3,7 @@ venv/
 __pycache__/
 .vscode/
 data/
+models/
 
 
 *.7z
