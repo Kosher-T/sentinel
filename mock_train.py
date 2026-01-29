@@ -50,7 +50,7 @@ if __name__ == "__main__":
         print("🔴 Error: No data source provided to trainer.")
         sys.exit(1)
 
-    target_output = "models/challenger_v2.pth"
+    target_output = "models\\challenger\\challenger_v2.pth"
     
     try:
         simulate_training(data_source, is_dir, target_output)
