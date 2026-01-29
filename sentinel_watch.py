@@ -61,7 +61,7 @@ class SentinelWatch:
         time.sleep(3) 
         # In a real scenario, this would be saved into the CHALLENGER folder
         new_model_name = f"challenger_v{int(time.time())}.keras"
-        new_model_path = config.DATA_PATH / "golden_set_septuplets" / "models" / "challenger" / new_model_name
+        new_model_path = config.MODEL_PATH / "golden_set_septuplets" / "models" / "challenger" / new_model_name
         
         # Simulate creating the file so Distiller sees it
         new_model_path.touch()
