@@ -59,6 +59,14 @@ RETRAINING_SCRIPT = PROJECT_ROOT / "mock_train.py"
 EXECUTION_TIMEOUT = 3600               # 1 hour in seconds
 EXPECTED_CHALLENGER_PATH = FRESH_MODEL_PATH / "challenger_v2.pth"
 
+# --- SAFETY & HARDWARE GOVERNOR ---
+# Forces single-GPU to avoid MirroredStrategy NaN issues
+FORCE_SINGLE_GPU = True 
+# Keywords to search for in training scripts during pre-flight check
+DANGEROUS_STRATEGIES = ["MirroredStrategy", "MultiWorkerMirroredStrategy", "CollectiveAllReduceStrategy"]
+# Fail-fast if these patterns are detected in logs
+CRITICAL_LOG_ERRORS = ["nan", "inf", "Out of memory", "CUDA_ERROR_OUT_OF_MEMORY"]
+
 # --- DATABASE & LOGGING (For Dashboard & Persistence) ---
 DRIFT_HISTORY_DB = DRIFT_MONITOR_ROOT / "drift_history.db" # Updated to .db to match dashboard
 RETRAIN_LOG = DRIFT_MONITOR_ROOT / "retrain_events.json"
