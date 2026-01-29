@@ -17,6 +17,13 @@ import detector_data_drift.pipeline as pipeline
 import detector_model_decay.analyzer as analyzer
 import detector_data_drift.extractor as detector
 
+# Service Imports
+try:
+    from services.execution_engine import ExecutionEngine
+except ImportError:
+    # Fallback if running from a different context
+    from execution_engine import ExecutionEngine
+
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] SENTINEL: %(message)s')
 
@@ -44,36 +51,32 @@ class SentinelWatch:
         conn.commit()
         conn.close()
 
-    # --- SIMULATED UTILITIES ---
+    # --- UTILITIES ---
     
     def simulate_cloud_connection(self):
         logging.info("Connecting to Cloud Environment...")
         time.sleep(1) 
         return True
 
-    def simulate_alert(self, level, message):
-        print(f"\n🚨 [ALERT - {level}] {message}\n")
-
-    def simulate_retraining(self, original_data, new_data_folder):
-        """Simulates retraining and saving a new model file."""
-        logging.info("Starting Retraining Loop (Challenger Model)...")
-        logging.info(f"   -> Mixing {original_data} + {new_data_folder}")
-        time.sleep(3) 
-        # In a real scenario, this would be saved into the CHALLENGER folder
-        new_model_name = f"challenger_v{int(time.time())}.keras"
-        new_model_path = config.MODEL_PATH / "golden_set_septuplets" / "models" / "challenger" / new_model_name
-        
-        # Simulate creating the file so Distiller sees it
-        new_model_path.touch()
-        logging.info(f"💾 Challenger model saved to: {new_model_path.name}")
-        return new_model_path
+    def simulate_alert(self, level, message, metrics=None):
+        """
+        Placeholder for the Alert System.
+        In a real scenario, this would import services.alert_utils and call .fire()
+        """
+        metrics_str = f" | Metrics: {metrics}" if metrics else ""
+        print(f"\n🚨 [ALERT - {level}] {message}{metrics_str}\n")
 
     def simulate_deployment(self, new_model_path):
         logging.info(f"Deploying Challenger Model ({new_model_path.name}) to Production...")
+        # In a real scenario, this would move files:
+        # shutil.move(new_model_path, config.OLD_MODEL_PATH / "production_vX.pth")
         time.sleep(2)
         logging.info("🟢 Deployment Complete. New model is live.")
 
     def archive_incoming_data(self, score, status):
+        """
+        Moves the current batch of incoming data to the archive history.
+        """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         folder_name = f"{timestamp}_{status}_{score:.2f}pct"
         dest_dir = config.ARCHIVED_DATA_PATH / folder_name
@@ -91,6 +94,20 @@ class SentinelWatch:
         except Exception as e:
             logging.error(f"   -> Archive failed: {e}")
             return None
+
+    def purge_drift_history(self):
+        """
+        Cleans up the archived data after a successful retraining and deployment.
+        This prevents retraining on data that has already been accounted for.
+        """
+        logging.info("🧹 Purging drift data history...")
+        try:
+            if config.ARCHIVED_DATA_PATH.exists():
+                shutil.rmtree(config.ARCHIVED_DATA_PATH)
+                config.ARCHIVED_DATA_PATH.mkdir(parents=True, exist_ok=True)
+                logging.info("🟢 History purged. Ready for new cycle.")
+        except Exception as e:
+            logging.error(f"🔴 Failed to purge history: {e}")
 
     # --- CORE PIPELINES ---
 
@@ -183,8 +200,11 @@ class SentinelWatch:
         
         if drift_score is None: return
 
+        # 1. Archive the data first so it is included in the history
         archived_path = self.archive_incoming_data(drift_score, status)
         self.record_drift_result(drift_score, status, archived_path)
+        
+        # 2. Check triggers
         is_triggered, fails, total = self.check_drift_history()
         
         if status == "PASS":
@@ -198,20 +218,37 @@ class SentinelWatch:
         logging.warning(f"⚠️ Drift Detected. Historical Window: {fails}/{total} failures.")
 
         if is_triggered:
-            logging.info("--- STEP 2: TRIGGER RETRAINING ---")
+            logging.info("--- STEP 2: TRIGGER RETRAINING (EXECUTION ENGINE) ---")
             self.simulate_alert("WARNING", f"Drift threshold exceeded ({fails}/{total} in window). Initiating Retraining.")
             
-            challenger_model = self.simulate_retraining(config.ORIGINAL_DATA_PATH, config.INCOMING_DATA_PATH)
+            # Initialize Engine
+            engine = ExecutionEngine()
+            
+            # We point the engine to ARCHIVED_DATA_PATH to include all recent failures + the current batch
+            logging.info(f"🚀 Dispatching Training Job using data from: {config.ARCHIVED_DATA_PATH}")
+            success, challenger_model_path, result_payload = engine.run_training(data_path=config.ARCHIVED_DATA_PATH)
+            
+            if not success:
+                logging.critical(f"🔴 Retraining Failed: {result_payload}")
+                self.simulate_alert("CRITICAL", f"Automated Retraining Failed: {result_payload}")
+                return
+
+            # If success, result_payload contains metrics (Loss/Accuracy)
+            logging.info(f"✅ Retraining Complete. Metrics: {result_payload}")
+            self.simulate_alert("INFO", "Retraining Success. Proceeding to Validation.", metrics=result_payload)
             
             logging.info("--- STEP 3: DECAY CHECK (GATEKEEPER) ---")
-            decay_passed = self.run_decay_pipeline(challenger_model)
+            decay_passed = self.run_decay_pipeline(Path(challenger_model_path))
             
             if decay_passed:
-                self.simulate_deployment(challenger_model)
+                self.simulate_deployment(Path(challenger_model_path))
                 self.simulate_alert("INFO", "Self-healing complete. New model deployed.")
+                
+                # Cleanup History
+                self.purge_drift_history()
             else:
                 logging.critical("STOP! Retrained model failed Decay Check.")
-                self.simulate_alert("CRITICAL", "Retrained model failed Decay Check. Deployment Aborted.")
+                self.simulate_alert("CRITICAL", "Retrained model failed Decay Check. Deployment Aborted.", metrics=result_payload)
                 
         else:
             logging.info("ℹ️ Drift detected but threshold not yet met. Recorded and waiting.")
