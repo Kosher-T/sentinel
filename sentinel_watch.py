@@ -23,8 +23,8 @@ try:
     from services.alert_utils import SentinelAlert
 except ImportError:
     # Fallback if running from a different context
-    from execution_engine import ExecutionEngine
-    from alert_utils import SentinelAlert
+    from execution_engine import ExecutionEngine  # type: ignore
+    from alert_utils import SentinelAlert  # type: ignore
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] SENTINEL: %(message)s')
@@ -256,10 +256,10 @@ class SentinelWatch:
             self.send_alert("INFO", "Retraining Success. Proceeding to Validation.", event_type="retraining", metrics=result_payload)
             
             logging.info("--- STEP 3: DECAY CHECK (GATEKEEPER) ---")
-            decay_passed = self.run_decay_pipeline(Path(challenger_model_path))
+            decay_passed = self.run_decay_pipeline(Path(challenger_model_path))  # type: ignore
             
             if decay_passed:
-                self.simulate_deployment(Path(challenger_model_path))
+                self.simulate_deployment(Path(challenger_model_path))  # type: ignore
                 self.send_alert("INFO", "Self-healing complete. New model deployed.", event_type="deployment")
                 
                 # Cleanup History
