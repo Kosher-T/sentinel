@@ -20,9 +20,11 @@ import detector_data_drift.extractor as detector
 # Service Imports
 try:
     from services.execution_engine import ExecutionEngine
+    from services.alert_utils import SentinelAlert
 except ImportError:
     # Fallback if running from a different context
     from execution_engine import ExecutionEngine
+    from alert_utils import SentinelAlert
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] SENTINEL: %(message)s')
@@ -31,6 +33,7 @@ class SentinelWatch:
     def __init__(self):
         self.db_path = config.DRIFT_HISTORY_DB
         self._init_db()
+        self.alert_engine = SentinelAlert()
 
     def _init_db(self):
         """Initializes the SQLite database if it doesn't exist."""
@@ -58,13 +61,23 @@ class SentinelWatch:
         time.sleep(1) 
         return True
 
-    def simulate_alert(self, level, message, metrics=None):
+    def send_alert(self, level, message, event_type="generic", metrics=None):
         """
-        Placeholder for the Alert System.
-        In a real scenario, this would import services.alert_utils and call .fire()
+        Triggers the multi-channel alert system (Email + System Notification).
+        Maps textual levels to integer priorities for alert_utils.
         """
+        level_map = {"INFO": 1, "WARNING": 2, "CRITICAL": 3}
+        int_level = level_map.get(level, 1)
+        
+        # Log to console for persistent record
         metrics_str = f" | Metrics: {metrics}" if metrics else ""
         print(f"\n🚨 [ALERT - {level}] {message}{metrics_str}\n")
+        
+        # Fire actual alert
+        try:
+            self.alert_engine.fire(int_level, event_type, message, metrics)
+        except Exception as e:
+            logging.error(f"Failed to dispatch alert: {e}")
 
     def simulate_deployment(self, new_model_path):
         logging.info(f"Deploying Challenger Model ({new_model_path.name}) to Production...")
@@ -76,6 +89,7 @@ class SentinelWatch:
     def archive_incoming_data(self, score, status):
         """
         Moves the current batch of incoming data to the archive history.
+        Clears the incoming folder so data isn't processed twice.
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         folder_name = f"{timestamp}_{status}_{score:.2f}pct"
@@ -85,8 +99,11 @@ class SentinelWatch:
         logging.info(f"🗄️ Archiving incoming data to {dest_dir}...")
         
         try:
-            if config.INCOMING_DATA_PATH.exists():
-                shutil.copytree(config.INCOMING_DATA_PATH, dest_dir, dirs_exist_ok=True)
+            # Check if there is data to move
+            if any(config.INCOMING_DATA_PATH.iterdir()):
+                # Move contents, not the folder itself, to preserve the mount point/folder structure
+                for item in config.INCOMING_DATA_PATH.iterdir():
+                    shutil.move(str(item), str(dest_dir))
                 return str(dest_dir)
             else:
                 logging.warning(f"   -> No data found in {config.INCOMING_DATA_PATH} to archive.")
@@ -196,6 +213,7 @@ class SentinelWatch:
         self.simulate_cloud_connection()
         
         logging.info("--- STEP 1: MONITOR DATA DRIFT ---")
+        logging.info("ℹ️ Running Drift Check on CPU (this may take a moment for large batches)...")
         drift_score, status = pipeline.run_drift_check()
         
         if drift_score is None: return
@@ -209,7 +227,7 @@ class SentinelWatch:
         
         if status == "PASS":
             if not is_triggered:
-                logging.info("🟢 Drift Status: OK. Archiving and sleeping.")
+                logging.info("🟢 Drift Status: OK. Data archived.")
                 return
             else:
                 logging.warning(f"⚠️ Current result PASS, but history shows instability ({fails}/{total} fails).")
@@ -219,7 +237,7 @@ class SentinelWatch:
 
         if is_triggered:
             logging.info("--- STEP 2: TRIGGER RETRAINING (EXECUTION ENGINE) ---")
-            self.simulate_alert("WARNING", f"Drift threshold exceeded ({fails}/{total} in window). Initiating Retraining.")
+            self.send_alert("WARNING", f"Drift threshold exceeded ({fails}/{total} in window). Initiating Retraining.", event_type="retraining")
             
             # Initialize Engine
             engine = ExecutionEngine()
@@ -230,25 +248,25 @@ class SentinelWatch:
             
             if not success:
                 logging.critical(f"🔴 Retraining Failed: {result_payload}")
-                self.simulate_alert("CRITICAL", f"Automated Retraining Failed: {result_payload}")
+                self.send_alert("CRITICAL", f"Automated Retraining Failed: {result_payload}", event_type="retraining_error")
                 return
 
             # If success, result_payload contains metrics (Loss/Accuracy)
             logging.info(f"✅ Retraining Complete. Metrics: {result_payload}")
-            self.simulate_alert("INFO", "Retraining Success. Proceeding to Validation.", metrics=result_payload)
+            self.send_alert("INFO", "Retraining Success. Proceeding to Validation.", event_type="retraining", metrics=result_payload)
             
             logging.info("--- STEP 3: DECAY CHECK (GATEKEEPER) ---")
             decay_passed = self.run_decay_pipeline(Path(challenger_model_path))
             
             if decay_passed:
                 self.simulate_deployment(Path(challenger_model_path))
-                self.simulate_alert("INFO", "Self-healing complete. New model deployed.")
+                self.send_alert("INFO", "Self-healing complete. New model deployed.", event_type="deployment")
                 
                 # Cleanup History
                 self.purge_drift_history()
             else:
                 logging.critical("STOP! Retrained model failed Decay Check.")
-                self.simulate_alert("CRITICAL", "Retrained model failed Decay Check. Deployment Aborted.", metrics=result_payload)
+                self.send_alert("CRITICAL", "Retrained model failed Decay Check. Deployment Aborted.", event_type="decay_fail", metrics=result_payload)
                 
         else:
             logging.info("ℹ️ Drift detected but threshold not yet met. Recorded and waiting.")
