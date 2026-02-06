@@ -24,6 +24,39 @@ logging.basicConfig(level=logging.INFO, format='[%(asctime)s] DECAY_EXTRACTOR: %
 
 BATCH_SIZE = 32
 
+def create_embedding_model():
+    """
+    Creates a VGG16-based feature extraction model.
+    Returns a Keras model that outputs embeddings.
+    """
+    try:
+        from tensorflow.keras.applications import VGG16  # type: ignore
+        from tensorflow.keras.layers import GlobalAveragePooling2D  # type: ignore
+        from tensorflow.keras.models import Model  # type: ignore
+    except ImportError:
+        from keras.applications import VGG16  # type: ignore
+        from keras.layers import GlobalAveragePooling2D  # type: ignore
+        from keras.models import Model  # type: ignore
+    
+    try:
+        target_h, target_w, channels = config.EMBEDDING_INPUT_SHAPE
+    except (AttributeError, ValueError):
+        target_h, target_w, channels = 224, 224, 3
+    
+    base_model = VGG16(
+        weights='imagenet',
+        include_top=False,
+        input_shape=(target_h, target_w, channels)
+    )
+    
+    # Add global average pooling to get fixed-size embeddings
+    x = base_model.output
+    x = GlobalAveragePooling2D()(x)
+    
+    model = Model(inputs=base_model.input, outputs=x)
+    logging.info(f"✅ Created VGG16 embedding model with output shape: {model.output_shape}")
+    return model
+
 def get_data_mode(directory):
     """
     Analyzes Golden Set contents to determine data type.
@@ -128,3 +161,37 @@ def extract_features(model, directory):
     else:
         logging.error(f"🔴 Golden Set format in {directory} is unsupported.")
         return np.array([])
+
+def extract_features_from_array(model, data_array):
+    """
+    Extracts embeddings directly from an in-memory numpy array.
+    Useful for processing stored Golden Set predictions.
+    """
+    if data_array is None or len(data_array) == 0:
+        return np.array([])
+
+    all_embeddings = []
+    
+    # Check if we need to resize
+    try:
+        target_h, target_w = config.EMBEDDING_INPUT_SHAPE[:2]
+    except AttributeError:
+        target_h, target_w = 224, 224
+
+    logging.info(f"Generating embeddings from array shape {data_array.shape}...")
+
+    for i in range(0, len(data_array), BATCH_SIZE):
+        batch_data = data_array[i:i + BATCH_SIZE]
+        
+        # Ensure float32 and normalized [0, 1] if valid image range [0, 255]
+        if batch_data.max() > 1.0:
+            batch_data = batch_data.astype(np.float32) / 255.0
+            
+        try:
+            features = model.predict(batch_data, verbose=0)
+            all_embeddings.append(features)
+        except Exception as e:
+            logging.error(f"Prediction failed on batch: {e}")
+            continue
+
+    return np.vstack(all_embeddings) if all_embeddings else np.array([])
