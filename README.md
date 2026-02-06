@@ -51,7 +51,7 @@ flowchart TD
         D --> E[detector_data_drift/pipeline.py]
         E --> F[Detect Domain]
         F --> G[Extract Embeddings]
-        G --> H[Run Analyzer (Ensemble Metrics)]
+        G --> H[Run Analyzer]
         H --> I{Drift Detected?}
     end
 
