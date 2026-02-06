@@ -50,7 +50,7 @@ flowchart TD
         C --> D[Run Drift Check]
         D --> E[detector_data_drift/pipeline.py]
         E --> F[Detect Domain]
-        F --> G[Extract Embeddings (MobileNetV2/ResNet)]
+        F --> G[Extract Embeddings]
         G --> H[Run Analyzer (Ensemble Metrics)]
         H --> I{Drift Detected?}
     end
