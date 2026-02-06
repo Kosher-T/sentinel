@@ -37,6 +37,44 @@ if str(project_root) not in sys.path:
 
 import all_config as config
 
+# --- Framework Imports (handled gracefully) ---
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
+    import tensorflow as tf
+    from tensorflow.keras.models import load_model as keras_load_model  # type: ignore
+    # Enable unsafe deserialization for custom layers
+    try:
+        tf.keras.config.enable_unsafe_deserialization()  # type: ignore
+    except Exception:
+        pass
+    KERAS_AVAILABLE = True
+except ImportError:
+    tf = None
+    KERAS_AVAILABLE = False
+
+try:
+    import torch  # type: ignore
+    PYTORCH_AVAILABLE = True
+except ImportError:
+    torch = None
+    PYTORCH_AVAILABLE = False
+
+try:
+    import onnxruntime as ort  # type: ignore
+    ONNX_AVAILABLE = True
+except ImportError:
+    ort = None
+    ONNX_AVAILABLE = False
+
+try:
+    from PIL import Image  # type: ignore
+except ImportError:
+    Image = None
+
 # --- Logging Configuration ---
 logging.basicConfig(
     level=logging.INFO,
@@ -46,50 +84,350 @@ logging.basicConfig(
 
 class ModelInferenceWrapper:
     """
-    Placeholder class for model inference.
+    Multi-framework inference wrapper for vision models.
     
-    This wrapper abstracts the model inference process, allowing the Golden Set 
-    Curator to work with ANY vision model architecture. The actual implementation
-    should be adapted based on the specific model being monitored.
+    Supports automatic detection and loading of:
+    - Keras/TensorFlow models (.keras, .h5)
+    - PyTorch models (.pt, .pth)
+    - ONNX models (.onnx)
     
-    The wrapper is responsible for:
-    1. Loading the production model
-    2. Running inference on input data
-    3. Saving the output in a consistent format alongside the input
+    The wrapper abstracts inference across frameworks, allowing the Golden Set 
+    Curator to work with ANY vision model architecture.
+    
+    Framework Detection:
+        The model framework is automatically detected based on file extension:
+        - .keras, .h5 → TensorFlow/Keras
+        - .pt, .pth → PyTorch
+        - .onnx → ONNX Runtime
     """
+    
+    # Supported extensions by framework
+    KERAS_EXTENSIONS = {'.keras', '.h5'}
+    PYTORCH_EXTENSIONS = {'.pt', '.pth'}
+    ONNX_EXTENSIONS = {'.onnx'}
+    
+    # Common image extensions for preprocessing
+    IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
     
     def __init__(self, model_path: Path):
         """
-        Initialize the inference wrapper.
+        Initialize the inference wrapper and load the model.
         
         Args:
-            model_path: Path to the production model file (.keras, .h5, .pt, etc.)
+            model_path: Path to the production model file
+            
+        Raises:
+            ValueError: If the model format is not supported
+            RuntimeError: If the required framework is not installed
         """
-        self.model_path = model_path
+        self.model_path = Path(model_path)
         self.model = None
+        self.framework = None
+        self.input_shape = None
+        
+        self._detect_framework()
         self._load_model()
+    
+    def _detect_framework(self) -> str:
+        """
+        Detect the model framework based on file extension.
+        
+        Returns:
+            Framework name: 'keras', 'pytorch', or 'onnx'
+            
+        Raises:
+            ValueError: If extension is not recognized
+        """
+        ext = self.model_path.suffix.lower()
+        
+        if ext in self.KERAS_EXTENSIONS:
+            if not KERAS_AVAILABLE:
+                raise RuntimeError(
+                    f"Keras/TensorFlow is required for {ext} models but not installed. "
+                    "Install with: pip install tensorflow"
+                )
+            self.framework = 'keras'
+        elif ext in self.PYTORCH_EXTENSIONS:
+            if not PYTORCH_AVAILABLE:
+                raise RuntimeError(
+                    f"PyTorch is required for {ext} models but not installed. "
+                    "Install with: pip install torch"
+                )
+            self.framework = 'pytorch'
+        elif ext in self.ONNX_EXTENSIONS:
+            if not ONNX_AVAILABLE:
+                raise RuntimeError(
+                    f"ONNX Runtime is required for {ext} models but not installed. "
+                    "Install with: pip install onnxruntime"
+                )
+            self.framework = 'onnx'
+        else:
+            raise ValueError(
+                f"Unsupported model format: {ext}. "
+                f"Supported: {self.KERAS_EXTENSIONS | self.PYTORCH_EXTENSIONS | self.ONNX_EXTENSIONS}"
+            )
+        
+        logging.info(f"🔍 Detected framework: {self.framework.upper()}")
+        return self.framework
     
     def _load_model(self):
         """
-        Load the production model.
-        
-        NOTE: This is a placeholder. Implement actual model loading based on
-        the framework being used (TensorFlow/Keras, PyTorch, ONNX, etc.)
+        Load the model using the appropriate framework.
         """
         logging.info(f"📦 Loading production model from: {self.model_path}")
-        # Placeholder: Actual model loading would go here
-        # Example for Keras:
-        # from tensorflow.keras.models import load_model
-        # self.model = load_model(self.model_path, compile=False)
-        pass
+        
+        if self.framework == 'keras':
+            self._load_keras_model()
+        elif self.framework == 'pytorch':
+            self._load_pytorch_model()
+        elif self.framework == 'onnx':
+            self._load_onnx_model()
+    
+    def _load_keras_model(self):
+        """Load a Keras/TensorFlow model."""
+        try:
+            self.model = keras_load_model(self.model_path, compile=False, safe_mode=False)
+            # Extract input shape for preprocessing
+            try:
+                self.input_shape = self.model.input_shape[1:]  # Remove batch dimension
+                logging.info(f"   Input shape: {self.input_shape}")
+            except Exception:
+                self.input_shape = None
+            logging.info(f"✅ Keras model loaded successfully")
+        except Exception as e:
+            logging.error(f"🔴 Failed to load Keras model: {e}")
+            raise
+    
+    def _load_pytorch_model(self):
+        """Load a PyTorch model."""
+        try:
+            # Try loading as a full model first, then as state_dict
+            self.model = torch.load(self.model_path, map_location='cpu')
+            if hasattr(self.model, 'eval'):
+                self.model.eval()
+            logging.info(f"✅ PyTorch model loaded successfully")
+        except Exception as e:
+            logging.error(f"🔴 Failed to load PyTorch model: {e}")
+            raise
+    
+    def _load_onnx_model(self):
+        """Load an ONNX model using ONNX Runtime."""
+        try:
+            self.model = ort.InferenceSession(str(self.model_path))
+            # Get input shape from ONNX model
+            input_info = self.model.get_inputs()[0]
+            self.input_shape = input_info.shape[1:]  # Remove batch dimension
+            logging.info(f"   Input name: {input_info.name}, shape: {self.input_shape}")
+            logging.info(f"✅ ONNX model loaded successfully")
+        except Exception as e:
+            logging.error(f"🔴 Failed to load ONNX model: {e}")
+            raise
+    
+    def _preprocess_input(self, input_path: Path) -> Optional[Any]:
+        """
+        Preprocess input data for inference.
+        
+        Handles:
+        - Single images → load and normalize
+        - Directories of images → load all as batch/sequence
+        
+        Args:
+            input_path: Path to input file or directory
+            
+        Returns:
+            Preprocessed numpy array ready for inference
+        """
+        if np is None:
+            logging.error("NumPy is required for preprocessing")
+            return None
+        
+        try:
+            images = []
+            
+            if input_path.is_dir():
+                # Load all images in directory (sorted for consistent ordering)
+                image_files = sorted([
+                    f for f in input_path.iterdir()
+                    if f.suffix.lower() in self.IMAGE_EXTENSIONS
+                ])
+                for img_file in image_files:
+                    img = self._load_image(img_file)
+                    if img is not None:
+                        images.append(img)
+            else:
+                # Single file
+                img = self._load_image(input_path)
+                if img is not None:
+                    images.append(img)
+            
+            if not images:
+                logging.warning(f"⚠️ No valid images found in {input_path}")
+                return None
+            
+            # Stack into batch
+            batch = np.stack(images, axis=0)
+            
+            # Normalize to [0, 1] if not already
+            if batch.max() > 1.0:
+                batch = batch.astype(np.float32) / 255.0
+            
+            return batch
+            
+        except Exception as e:
+            logging.error(f"🔴 Preprocessing failed: {e}")
+            return None
+    
+    def _load_image(self, image_path: Path) -> Optional[Any]:
+        """
+        Load and resize a single image.
+        
+        Args:
+            image_path: Path to the image file
+            
+        Returns:
+            Numpy array of shape (H, W, C)
+        """
+        try:
+            if Image is not None:
+                # Use PIL for loading
+                img = Image.open(image_path).convert('RGB')
+                
+                # Resize if we know the expected input shape
+                if self.input_shape is not None:
+                    # input_shape is typically (H, W, C) for Keras or (C, H, W) for PyTorch
+                    if len(self.input_shape) >= 2:
+                        h, w = self.input_shape[0], self.input_shape[1]
+                        if h is not None and w is not None and h > 0 and w > 0:
+                            img = img.resize((w, h))
+                
+                return np.array(img, dtype=np.float32)
+            else:
+                # Fallback: try cv2
+                import cv2  # type: ignore
+                img = cv2.imread(str(image_path))
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                return img.astype(np.float32)
+                
+        except Exception as e:
+            logging.warning(f"⚠️ Could not load image {image_path.name}: {e}")
+            return None
+    
+    def _run_inference(self, preprocessed_input: Any) -> Optional[Any]:
+        """
+        Run inference using the loaded model.
+        
+        Args:
+            preprocessed_input: Preprocessed numpy array
+            
+        Returns:
+            Model output (numpy array)
+        """
+        try:
+            if self.framework == 'keras':
+                return self._infer_keras(preprocessed_input)
+            elif self.framework == 'pytorch':
+                return self._infer_pytorch(preprocessed_input)
+            elif self.framework == 'onnx':
+                return self._infer_onnx(preprocessed_input)
+        except Exception as e:
+            logging.error(f"🔴 Inference failed: {e}")
+            return None
+    
+    def _infer_keras(self, inputs: Any) -> Any:
+        """Run inference with Keras model."""
+        return self.model.predict(inputs, verbose=0)
+    
+    def _infer_pytorch(self, inputs: Any) -> Any:
+        """Run inference with PyTorch model."""
+        # Convert to tensor and adjust dimensions if needed (NHWC -> NCHW)
+        tensor_input = torch.from_numpy(inputs)
+        if tensor_input.dim() == 4 and tensor_input.shape[-1] in [1, 3, 4]:
+            # Likely NHWC format, convert to NCHW
+            tensor_input = tensor_input.permute(0, 3, 1, 2)
+        
+        with torch.no_grad():
+            output = self.model(tensor_input)
+        
+        # Convert back to numpy
+        if hasattr(output, 'numpy'):
+            return output.numpy()
+        elif hasattr(output, 'cpu'):
+            return output.cpu().numpy()
+        return output
+    
+    def _infer_onnx(self, inputs: Any) -> Any:
+        """Run inference with ONNX Runtime."""
+        input_name = self.model.get_inputs()[0].name
+        
+        # ONNX might expect NCHW format
+        if inputs.shape[-1] in [1, 3, 4] and len(inputs.shape) == 4:
+            inputs = np.transpose(inputs, (0, 3, 1, 2))
+        
+        outputs = self.model.run(None, {input_name: inputs.astype(np.float32)})
+        return outputs[0] if len(outputs) == 1 else outputs
+    
+    def _save_output(self, output: Any, output_dir: Path) -> bool:
+        """
+        Save model output to disk.
+        
+        Saves as:
+        - .npy file for numeric arrays
+        - .png if output appears to be an image
+        
+        Args:
+            output: Model output to save
+            output_dir: Directory to save output in
+            
+        Returns:
+            True if saved successfully
+        """
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Always save raw output as .npy
+            npy_path = output_dir / "prediction.npy"
+            np.save(npy_path, output)
+            
+            # If output looks like an image, save as PNG too
+            if len(output.shape) >= 3:
+                try:
+                    # Take first output if batched
+                    img_data = output[0] if output.shape[0] <= 8 else output
+                    
+                    # Handle NCHW format
+                    if img_data.shape[0] in [1, 3, 4] and len(img_data.shape) == 3:
+                        img_data = np.transpose(img_data, (1, 2, 0))
+                    
+                    # Normalize to [0, 255]
+                    if img_data.max() <= 1.0:
+                        img_data = (img_data * 255).astype(np.uint8)
+                    else:
+                        img_data = np.clip(img_data, 0, 255).astype(np.uint8)
+                    
+                    # Save as image
+                    if Image is not None:
+                        if img_data.shape[-1] == 1:
+                            img_data = img_data.squeeze(-1)
+                        pil_img = Image.fromarray(img_data)
+                        pil_img.save(output_dir / "prediction.png")
+                except Exception:
+                    pass  # Image saving is optional
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"🔴 Failed to save output: {e}")
+            return False
     
     def generate_baseline(self, input_path: Path, output_dir: Path) -> bool:
         """
         Run inference on input data and save the result as baseline.
         
-        This method takes an input sample (which could be a single image, a folder 
-        of frames, or any other format), runs it through the production model,
-        and saves the output alongside a copy of the input.
+        This method:
+        1. Copies the input to output_dir/input/
+        2. Preprocesses the input for the model
+        3. Runs inference
+        4. Saves the model output to output_dir/output/
         
         Args:
             input_path: Path to the input sample (file or directory)
@@ -112,35 +450,50 @@ class ModelInferenceWrapper:
             
             # Copy input data
             if input_path.is_dir():
-                # Copy entire directory contents
                 for item in input_path.iterdir():
                     if item.is_file():
                         shutil.copy2(item, input_dest / item.name)
             else:
-                # Copy single file
                 shutil.copy2(input_path, input_dest / input_path.name)
             
-            # --- PLACEHOLDER: Actual inference logic ---
-            # Here you would:
-            # 1. Load/preprocess the input
-            # 2. Run self.model.predict() or equivalent
-            # 3. Save the model output to output_dest
-            #
-            # Example pseudo-code:
-            # input_data = preprocess(input_path)
-            # prediction = self.model.predict(input_data)
-            # save_prediction(prediction, output_dest / "prediction.npy")
+            # Preprocess input
+            preprocessed = self._preprocess_input(input_path)
+            if preprocessed is None:
+                logging.warning(f"⚠️ Could not preprocess {input_path.name}, saving input only")
+                # Still return True - input was saved, just no prediction
+                marker = output_dest / ".preprocessing_failed"
+                marker.write_text(f"Preprocessing failed at: {datetime.now().isoformat()}\n")
+                return True
             
-            # For now, create a placeholder marker file
-            marker_file = output_dest / ".baseline_generated"
-            marker_file.write_text(f"Generated at: {datetime.now().isoformat()}\n"
-                                   f"Model: {self.model_path.name}\n")
+            # Run inference
+            output = self._run_inference(preprocessed)
+            if output is None:
+                logging.warning(f"⚠️ Inference failed for {input_path.name}, saving input only")
+                marker = output_dest / ".inference_failed"
+                marker.write_text(f"Inference failed at: {datetime.now().isoformat()}\n")
+                return True
+            
+            # Save output
+            if not self._save_output(output, output_dest):
+                logging.warning(f"⚠️ Could not save output for {input_path.name}")
+                return True  # Input was saved
+            
+            # Success marker
+            marker = output_dest / ".baseline_generated"
+            marker.write_text(
+                f"Generated at: {datetime.now().isoformat()}\n"
+                f"Model: {self.model_path.name}\n"
+                f"Framework: {self.framework}\n"
+                f"Input shape: {preprocessed.shape}\n"
+                f"Output shape: {output.shape if hasattr(output, 'shape') else 'N/A'}\n"
+            )
             
             return True
             
         except Exception as e:
             logging.error(f"🔴 Failed to generate baseline for {input_path.name}: {e}")
             return False
+
 
 
 class GoldenSetCurator:
