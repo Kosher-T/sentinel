@@ -21,10 +21,14 @@ import detector_data_drift.extractor as detector
 try:
     from services.execution_engine import ExecutionEngine
     from services.alert_utils import SentinelAlert
+    from services.golden_set_curator import GoldenSetCurator
+    from services.data_rotator import DataRotator
 except ImportError:
     # Fallback if running from a different context
     from execution_engine import ExecutionEngine  # type: ignore
     from alert_utils import SentinelAlert  # type: ignore
+    from golden_set_curator import GoldenSetCurator  # type: ignore
+    from data_rotator import DataRotator  # type: ignore
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] SENTINEL: %(message)s')
@@ -125,6 +129,55 @@ class SentinelWatch:
                 logging.info("🟢 History purged. Ready for new cycle.")
         except Exception as e:
             logging.error(f"🔴 Failed to purge history: {e}")
+
+    def update_baselines(self, deployed_model_path: Path):
+        """
+        Post-deployment baseline updates.
+        
+        After a successful model deployment, updates:
+        1. Golden Set: Run curator with drifted data to update baselines
+        2. ORIGINAL_DATA_PATH: Rotate drifted data into reference dataset
+        
+        This ensures:
+        - Golden Set reflects the new model's outputs
+        - Future drift checks won't re-trigger on already-processed data
+        
+        Args:
+            deployed_model_path: Path to the newly deployed model
+        """
+        logging.info("--- STEP 4: UPDATE BASELINES ---")
+        
+        # 1. Update Golden Set with the new model's predictions
+        try:
+            logging.info("📦 Updating Golden Set with new model baselines...")
+            curator = GoldenSetCurator(
+                input_dirs=[config.ARCHIVED_DATA_PATH],
+                model_path=deployed_model_path,
+                sample_size=100  # Maintain ~100 sample Golden Set
+            )
+            exit_code = curator.curate()
+            if exit_code == 0:
+                logging.info("✅ Golden Set updated successfully")
+            else:
+                logging.warning("⚠️ Golden Set update had issues, check logs")
+        except Exception as e:
+            logging.error(f"🔴 Golden Set update failed: {e}")
+        
+        # 2. Rotate drifted data into ORIGINAL_DATA_PATH
+        try:
+            logging.info("🔄 Rotating drifted data into ORIGINAL_DATA_PATH...")
+            rotator = DataRotator(rotation_percentage=0.20)
+            success = rotator.rotate(
+                source_dir=config.ARCHIVED_DATA_PATH,
+                target_dir=config.ORIGINAL_DATA_PATH,
+                sample_prefix="0_"
+            )
+            if success:
+                logging.info("✅ ORIGINAL_DATA_PATH updated successfully")
+            else:
+                logging.warning("⚠️ ORIGINAL_DATA_PATH rotation had issues")
+        except Exception as e:
+            logging.error(f"🔴 ORIGINAL_DATA_PATH rotation failed: {e}")
 
     # --- CORE PIPELINES ---
 
@@ -261,6 +314,9 @@ class SentinelWatch:
             if decay_passed:
                 self.simulate_deployment(Path(challenger_model_path))  # type: ignore
                 self.send_alert("INFO", "Self-healing complete. New model deployed.", event_type="deployment")
+                
+                # Update baselines BEFORE purging history
+                self.update_baselines(Path(challenger_model_path))  # type: ignore
                 
                 # Cleanup History
                 self.purge_drift_history()
