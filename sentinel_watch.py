@@ -23,12 +23,14 @@ try:
     from services.alert_utils import SentinelAlert
     from services.golden_set_curator import GoldenSetCurator
     from services.data_rotator import DataRotator
+    from services.system_state_tracker import SystemStateTracker
 except ImportError:
     # Fallback if running from a different context
     from execution_engine import ExecutionEngine  # type: ignore
     from alert_utils import SentinelAlert  # type: ignore
     from golden_set_curator import GoldenSetCurator  # type: ignore
     from data_rotator import DataRotator  # type: ignore
+    from system_state_tracker import SystemStateTracker  # type: ignore
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] SENTINEL: %(message)s')
@@ -38,6 +40,7 @@ class SentinelWatch:
         self.db_path = config.DRIFT_HISTORY_DB
         self._init_db()
         self.alert_engine = SentinelAlert()
+        self.state_tracker = SystemStateTracker()
 
     def _init_db(self):
         """Initializes the SQLite database if it doesn't exist."""
@@ -115,6 +118,25 @@ class SentinelWatch:
         except Exception as e:
             logging.error(f"   -> Archive failed: {e}")
             return None
+
+    def discard_incoming_data(self):
+        """
+        Removes the current batch of incoming data without archiving.
+        Used when drift check passes and data doesn't need to be preserved.
+        """
+        logging.info("🗑️ Discarding incoming data (PASS - no archive needed)...")
+        try:
+            if any(config.INCOMING_DATA_PATH.iterdir()):
+                for item in config.INCOMING_DATA_PATH.iterdir():
+                    if item.is_dir():
+                        shutil.rmtree(item)
+                    else:
+                        item.unlink()
+                logging.info("✅ Incoming data discarded successfully.")
+            else:
+                logging.info("   -> No data found in incoming folder.")
+        except Exception as e:
+            logging.error(f"🔴 Failed to discard incoming data: {e}")
 
     def purge_drift_history(self):
         """
@@ -271,16 +293,25 @@ class SentinelWatch:
         
         if drift_score is None: return
 
-        # 1. Archive the data first so it is included in the history
-        archived_path = self.archive_incoming_data(drift_score, status)
-        self.record_drift_result(drift_score, status, archived_path)
+        # 1. Handle data based on drift status
+        if status == "PASS":
+            # PASS: Record to DB only, discard the incoming data (no archive needed)
+            self.record_drift_result(drift_score, status, None)
+            self.discard_incoming_data()
+        else:
+            # FAIL: Archive the data and record to DB
+            archived_path = self.archive_incoming_data(drift_score, status)
+            self.record_drift_result(drift_score, status, archived_path)
         
         # 2. Check triggers
         is_triggered, fails, total = self.check_drift_history()
         
+        # 3. Update system state based on drift result
+        self.state_tracker.update_from_drift(drift_score, status, is_triggered)
+        
         if status == "PASS":
             if not is_triggered:
-                logging.info("🟢 Drift Status: OK. Data archived.")
+                logging.info("🟢 Drift Status: OK. Data discarded (no archive needed).")
                 return
             else:
                 logging.warning(f"⚠️ Current result PASS, but history shows instability ({fails}/{total} fails).")
@@ -302,11 +333,13 @@ class SentinelWatch:
             if not success:
                 logging.critical(f"🔴 Retraining Failed: {result_payload}")
                 self.send_alert("CRITICAL", f"Automated Retraining Failed: {result_payload}", event_type="retraining_error")
+                self.state_tracker.update_from_event("retraining", success=False, details=str(result_payload))
                 return
 
             # If success, result_payload contains metrics (Loss/Accuracy)
             logging.info(f"✅ Retraining Complete. Metrics: {result_payload}")
             self.send_alert("INFO", "Retraining Success. Proceeding to Validation.", event_type="retraining", metrics=result_payload)
+            self.state_tracker.update_from_event("retraining", success=True)
             
             logging.info("--- STEP 3: DECAY CHECK (GATEKEEPER) ---")
             decay_passed = self.run_decay_pipeline(Path(challenger_model_path))  # type: ignore
@@ -314,6 +347,7 @@ class SentinelWatch:
             if decay_passed:
                 self.simulate_deployment(Path(challenger_model_path))  # type: ignore
                 self.send_alert("INFO", "Self-healing complete. New model deployed.", event_type="deployment")
+                self.state_tracker.update_from_event("deployment", success=True)
                 
                 # Update baselines BEFORE purging history
                 self.update_baselines(Path(challenger_model_path))  # type: ignore
@@ -323,6 +357,7 @@ class SentinelWatch:
             else:
                 logging.critical("STOP! Retrained model failed Decay Check.")
                 self.send_alert("CRITICAL", "Retrained model failed Decay Check. Deployment Aborted.", event_type="decay_fail", metrics=result_payload)
+                self.state_tracker.update_from_event("decay_check", success=False)
                 
         else:
             logging.info("ℹ️ Drift detected but threshold not yet met. Recorded and waiting.")

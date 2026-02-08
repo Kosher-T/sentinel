@@ -12,6 +12,7 @@ PAGE_TITLE = "Sentinel Monitoring"
 PAGE_ICON = "🛡️"
 LAYOUT = "wide"
 DB_PATH = Path("data/data_drift/drift_history.db")
+STATE_PATH = Path("data/data_drift/system_state.json")
 
 # --- SETUP PAGE ---
 st.set_page_config(page_title=PAGE_TITLE, page_icon=PAGE_ICON, layout=LAYOUT)
@@ -58,6 +59,18 @@ def get_db_connection():
     # Use check_same_thread=False for streamlit compatibility
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
+def load_system_state():
+    """Loads the current system state from the JSON file."""
+    if not STATE_PATH.exists():
+        return {"state": "NOMINAL", "last_reason": "No state file found"}
+    
+    try:
+        import json
+        with open(STATE_PATH, 'r') as f:
+            return json.load(f)
+    except Exception:
+        return {"state": "NOMINAL", "last_reason": "Error reading state"}
+
 def load_data():
     """Loads drift logs from the database into a Pandas DataFrame."""
     conn = get_db_connection()
@@ -80,7 +93,7 @@ def load_data():
 # --- COMPONENT: METRICS ---
 
 def render_metrics(df):
-    """Renders the top-level KPI metrics."""
+    """Renders the top-level KPI metrics including system state."""
     if df.empty:
         st.warning("No data available to calculate metrics.")
         return
@@ -92,20 +105,31 @@ def render_metrics(df):
     recent_df = df.head(10)
     fail_count = recent_df[recent_df['status'] == 'FAIL'].shape[0]
     fail_rate = (fail_count / 10) * 100
+    
+    # Load system state
+    system_state = load_system_state()
+    state_value = system_state.get("state", "NOMINAL")
+    state_reason = system_state.get("last_reason", "")
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
+        # System State with color coding
+        state_icons = {"NOMINAL": "🟢", "WARNING": "🟡", "RED": "🔴"}
+        state_icon = state_icons.get(state_value, "❓")
+        st.metric(label="System State", value=f"{state_icon} {state_value}", delta=state_reason[:30] + "..." if len(state_reason) > 30 else state_reason, delta_color="off")
+    
+    with col2:
         status_color = "normal" if latest_run['status'] == "PASS" else "inverse"
         st.metric(label="Latest Status", value=latest_run['status'], delta="System Check", delta_color=status_color)
     
-    with col2:
+    with col3:
         st.metric(label="Drift Score", value=f"{latest_run['drift_score']:.2f}%", delta=f"Limit: {latest_run['threshold']}%", delta_color="inverse")
 
-    with col3:
+    with col4:
         st.metric(label="Failure Rate (L10)", value=f"{fail_rate:.0f}%", delta="Historical Trend", delta_color="off")
 
-    with col4:
+    with col5:
         # Displaying local time to show it's active
         check_time = latest_run['timestamp'].strftime('%H:%M:%S')
         check_date = latest_run['timestamp'].strftime('%Y-%m-%d')
