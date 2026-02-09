@@ -400,7 +400,7 @@ def validate_directories() -> bool:
     directories = [
         config.BASE_DATA_DIR,
         config.GOLDEN_SET_DIR.parent,
-        config.ORIGINAL_DATA_PATH,
+        config.TRAINING_DATA_PATH,
         config.INCOMING_DATA_PATH,
         config.ARCHIVED_DATA_PATH,
         config.MODEL_PATH,
@@ -489,6 +489,34 @@ def run_setup() -> int:
         return 1
     
     print(f"✅ Loaded {sample_count} training samples")
+    
+    # Copy training data to Sentinel's managed folder if different location
+    if training_path.resolve() != config.TRAINING_DATA_PATH.resolve():
+        print(f"📦 Copying training data to Sentinel's managed folder...")
+        try:
+            # Clear destination if exists
+            if config.TRAINING_DATA_PATH.exists():
+                for item in config.TRAINING_DATA_PATH.iterdir():
+                    if item.is_dir():
+                        shutil.rmtree(item)
+                    else:
+                        item.unlink()
+            
+            # Copy all files
+            if training_path.is_file():
+                shutil.copy2(training_path, config.TRAINING_DATA_PATH / training_path.name)
+            else:
+                for item in training_path.iterdir():
+                    if item.is_dir():
+                        shutil.copytree(item, config.TRAINING_DATA_PATH / item.name)
+                    else:
+                        shutil.copy2(item, config.TRAINING_DATA_PATH / item.name)
+            print(f"✅ Training data copied to: {config.TRAINING_DATA_PATH}")
+        except Exception as e:
+            logging.error(f"🔴 Failed to copy training data: {e}")
+            return 1
+    else:
+        print("✅ Training data already in Sentinel's managed folder")
     
     # --- Step 3: Get model path ---
     print("\n🧠 PRODUCTION MODEL")
@@ -623,14 +651,57 @@ def run_setup() -> int:
         shutil.copy2(model_path, prod_model_dest)
         print(f"✅ Model copied to: {prod_model_dest}")
     
+    # --- Step 10: Distill production model ---
+    print("\n🧪 MODEL DISTILLATION")
+    print("-" * 40)
+    
+    try:
+        from services.distiller import Distiller
+        from services.smart_distill_cli import (
+            get_fingerprint, load_memory, run_interactive_session
+        )
+        
+        # Check if architecture is known
+        import keras
+        temp_model = keras.models.load_model(str(prod_model_dest), compile=False, safe_mode=False)
+        fingerprint = get_fingerprint(temp_model)
+        memory = load_memory()
+        del temp_model
+        keras.backend.clear_session()
+        
+        if fingerprint in memory:
+            known_layer = memory[fingerprint]
+            print(f"🧠 Known architecture detected! Cut point: '{known_layer}'")
+            print("Running automatic distillation...")
+            
+            distiller = Distiller()
+            distilled_path = config.PRODUCTION_DISTILLED_DIR / f"{prod_model_dest.stem}{config.DISTILL_SUFFIX}.keras"
+            success = distiller.process_model(prod_model_dest, distilled_path)
+            
+            if success:
+                print(f"✅ Distilled model created: {distilled_path.name}")
+            else:
+                print("⚠️ Distillation had issues but setup will continue")
+        else:
+            print("🔍 Unknown architecture. Interactive session required.")
+            print("\nThe distiller needs to learn where to cut this model for feature extraction.")
+            print("This is a one-time process per unique architecture.\n")
+            run_interactive_session()
+            print("✅ Architecture learned and model distilled")
+            
+    except Exception as e:
+        logging.warning(f"⚠️ Distillation step had issues: {e}")
+        print("⚠️ Distillation failed but setup will continue.")
+        print("   You can run distillation manually: python services/smart_distill_cli.py")
+    
     # --- Complete! ---
     print("\n" + "=" * 60)
     print("✅ SENTINEL SETUP COMPLETE!")
     print("=" * 60)
     print("\nConfiguration saved to: all_config.py")
-    print("\nNext steps:")
-    print("  1. Start the distiller: python services/distiller.py")
-    print("  2. Run sentinel: python sentinel_watch.py")
+    print("\n🚀 Orchestrator started (simulated)")
+    print(f"   Schedule: {monitor_schedule}")
+    print("\n📊 Dashboard available at http://localhost:8501 (simulated)")
     print("=" * 60 + "\n")
     
     return 0
