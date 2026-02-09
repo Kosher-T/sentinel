@@ -158,7 +158,7 @@ class SentinelWatch:
         
         After a successful model deployment, updates:
         1. Golden Set: Run curator with drifted data to update baselines
-        2. ORIGINAL_DATA_PATH: Rotate drifted data into reference dataset
+        2. TRAINING_DATA_PATH: Rotate drifted data into reference dataset
         
         This ensures:
         - Golden Set reflects the new model's outputs
@@ -185,21 +185,21 @@ class SentinelWatch:
         except Exception as e:
             logging.error(f"🔴 Golden Set update failed: {e}")
         
-        # 2. Rotate drifted data into ORIGINAL_DATA_PATH
+        # 2. Rotate drifted data into TRAINING_DATA_PATH
         try:
-            logging.info("🔄 Rotating drifted data into ORIGINAL_DATA_PATH...")
+            logging.info("🔄 Rotating drifted data into TRAINING_DATA_PATH...")
             rotator = DataRotator(rotation_percentage=0.20)
             success = rotator.rotate(
                 source_dir=config.ARCHIVED_DATA_PATH,
-                target_dir=config.ORIGINAL_DATA_PATH,
+                target_dir=config.TRAINING_DATA_PATH,
                 sample_prefix="0_"
             )
             if success:
-                logging.info("✅ ORIGINAL_DATA_PATH updated successfully")
+                logging.info("✅ TRAINING_DATA_PATH updated successfully")
             else:
-                logging.warning("⚠️ ORIGINAL_DATA_PATH rotation had issues")
+                logging.warning("⚠️ TRAINING_DATA_PATH rotation had issues")
         except Exception as e:
-            logging.error(f"🔴 ORIGINAL_DATA_PATH rotation failed: {e}")
+            logging.error(f"🔴 TRAINING_DATA_PATH rotation failed: {e}")
 
     # --- CORE PIPELINES ---
 

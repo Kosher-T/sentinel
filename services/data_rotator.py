@@ -5,7 +5,7 @@ Utility for rotating samples between datasets while maintaining a fixed size.
 
 Used by:
 - GoldenSetCurator for baseline updates
-- SentinelWatch for ORIGINAL_DATA_PATH updates after successful deployments
+- SentinelWatch for TRAINING_DATA_PATH updates after successful deployments
 
 The rotation strategy prevents datasets from growing infinitely while
 ensuring they evolve to reflect new data distributions.
@@ -45,7 +45,7 @@ class DataRotator:
     
     Use Cases:
         1. Golden Set updates: Rotate production model outputs
-        2. ORIGINAL_DATA_PATH updates: Add drifted data to prevent re-triggering
+        2. TRAINING_DATA_PATH updates: Add drifted data to prevent re-triggering
     """
     
     # Default rotation percentage
@@ -197,7 +197,7 @@ class DataRotator:
         """
         Add samples from source to target without removing any.
         
-        Useful for ORIGINAL_DATA_PATH when you want to ensure drifted
+        Useful for TRAINING_DATA_PATH when you want to ensure drifted
         data is included in the reference baseline.
         
         Args:

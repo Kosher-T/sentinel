@@ -217,7 +217,7 @@ def run_drift_check():
     Sentinel Watch Wrapper: Automatically locates the latest distilled 
     production model and runs analysis using configured paths.
     """
-    baseline = config.ORIGINAL_DATA_PATH
+    baseline = config.TRAINING_DATA_PATH
     incoming = config.INCOMING_DATA_PATH
     
     distilled_models = list(config.PRODUCTION_DISTILLED_DIR.glob(f"*{config.DISTILL_SUFFIX}.keras"))
