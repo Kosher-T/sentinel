@@ -60,8 +60,8 @@ MODEL_HISTORY_FILE = MODEL_DECAY_ROOT / "model_run_history.json"
 
 # --- HARDWARE ---
 # Forces CPU for monitoring tasks to avoid interrupting heavy GPU training sessions
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-CUDA_VISIBLE_DEVICES = "-1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+CUDA_VISIBLE_DEVICES = "0"
 
 # --- DISTILLER CONFIGURATION ---
 # Directories for distilled (latent space) models
