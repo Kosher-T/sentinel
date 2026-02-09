@@ -104,3 +104,7 @@ EXECUTION_DRIVERS_PRIORITY = ['LOCAL']
 RETRAINING_SCRIPT = PROJECT_ROOT / "mock_train.py"
 EXECUTION_TIMEOUT = 3600
 EXPECTED_CHALLENGER_PATH = PROJECT_ROOT / "models/challenger/challenger_v2.pth"
+
+# --- REBASE SETTINGS ---
+# Number of samples to collect when using stream calibration during rebase
+REBASE_CALIBRATION_SAMPLES = 50

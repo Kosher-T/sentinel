@@ -25,6 +25,7 @@ class SystemState(Enum):
     NOMINAL = "NOMINAL"  # Green - All systems operating normally
     WARNING = "WARNING"  # Yellow - Drift detected but not critical
     RED = "RED"          # Red - Critical failure (retraining failed, decay check failed)
+    REBASE_IN_PROGRESS = "REBASE_IN_PROGRESS"  # Engineer-initiated system rebase
 
 
 class SystemStateTracker:
@@ -62,7 +63,8 @@ class SystemStateTracker:
             "state": SystemState.NOMINAL.value,
             "last_updated": datetime.now().isoformat(),
             "last_reason": "System initialized",
-            "drift_history": []
+            "drift_history": [],
+            "rebase": None  # Rebase tracking: {reason, method, started_at, state_before_rebase}
         }
         
         if self.state_file.exists():
@@ -212,6 +214,109 @@ class SystemStateTracker:
         
         else:
             logging.warning(f"Unknown event type: {event_type}")
+    
+    # =========================================================================
+    # REBASE WORKFLOW METHODS
+    # =========================================================================
+    
+    def start_rebase(self, reason: str, method: str) -> bool:
+        """
+        Begin a system rebase operation.
+        
+        Args:
+            reason: What changed (new_model, data_pipeline, transient_fix)
+            method: Chosen approach (new_training_data, stream_calibration, keep_baseline)
+            
+        Returns:
+            True if rebase started successfully
+        """
+        current_state = self._data["state"]
+        
+        # Store rebase tracking info
+        self._data["rebase"] = {
+            "reason": reason,
+            "method": method,
+            "started_at": datetime.now().isoformat(),
+            "state_before_rebase": current_state
+        }
+        
+        self._update_state(
+            SystemState.REBASE_IN_PROGRESS,
+            f"Rebase started: {reason} → {method}"
+        )
+        
+        logging.info(f"🔄 Rebase initiated: reason={reason}, method={method}")
+        return True
+    
+    def complete_rebase(self, success: bool, details: Optional[str] = None) -> None:
+        """
+        Complete a rebase operation.
+        
+        Args:
+            success: Whether the rebase completed successfully
+            details: Optional additional context
+        """
+        detail_str = f" - {details}" if details else ""
+        
+        if success:
+            # Clear drift history on successful rebase (fresh start)
+            self._data["drift_history"] = []
+            self._update_state(
+                SystemState.NOMINAL,
+                f"Rebase completed successfully{detail_str}"
+            )
+            logging.info(f"✅ Rebase completed successfully{detail_str}")
+        else:
+            # Restore previous state on failure
+            previous_state = SystemState.RED  # Default to RED if unknown
+            if self._data.get("rebase") and self._data["rebase"].get("state_before_rebase"):
+                try:
+                    previous_state = SystemState(self._data["rebase"]["state_before_rebase"])
+                except ValueError:
+                    pass
+            
+            self._update_state(
+                previous_state,
+                f"Rebase failed{detail_str}"
+            )
+            logging.error(f"🔴 Rebase failed{detail_str}")
+        
+        # Clear rebase tracking
+        self._data["rebase"] = None
+        self._persist()
+    
+    def cancel_rebase(self) -> None:
+        """Cancel an in-progress rebase and restore previous state."""
+        if self._data["state"] != SystemState.REBASE_IN_PROGRESS.value:
+            logging.warning("Cannot cancel rebase: not in REBASE_IN_PROGRESS state")
+            return
+        
+        previous_state = SystemState.NOMINAL  # Default
+        if self._data.get("rebase") and self._data["rebase"].get("state_before_rebase"):
+            try:
+                previous_state = SystemState(self._data["rebase"]["state_before_rebase"])
+            except ValueError:
+                pass
+        
+        self._update_state(previous_state, "Rebase cancelled by user")
+        self._data["rebase"] = None
+        self._persist()
+        logging.info("⚠️ Rebase cancelled")
+    
+    def get_rebase_status(self) -> Optional[Dict[str, Any]]:
+        """
+        Get current rebase status.
+        
+        Returns:
+            Rebase tracking dict if rebase in progress, None otherwise
+        """
+        if self._data["state"] == SystemState.REBASE_IN_PROGRESS.value:
+            return self._data.get("rebase")
+        return None
+    
+    def is_rebase_in_progress(self) -> bool:
+        """Check if a rebase is currently in progress."""
+        return self._data["state"] == SystemState.REBASE_IN_PROGRESS.value
 
 
 # Convenience function for reading state without instantiating the class

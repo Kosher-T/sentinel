@@ -14,6 +14,14 @@ LAYOUT = "wide"
 DB_PATH = Path("data/data_drift/drift_history.db")
 STATE_PATH = Path("data/data_drift/system_state.json")
 
+# Import rebase workflow
+try:
+    from services.rebase_workflow import RebaseWorkflow, RebaseMethod
+    from services.system_state_tracker import SystemStateTracker
+    REBASE_AVAILABLE = True
+except ImportError:
+    REBASE_AVAILABLE = False
+
 # --- SETUP PAGE ---
 st.set_page_config(page_title=PAGE_TITLE, page_icon=PAGE_ICON, layout=LAYOUT)
 
@@ -115,7 +123,7 @@ def render_metrics(df):
 
     with col1:
         # System State with color coding
-        state_icons = {"NOMINAL": "🟢", "WARNING": "🟡", "RED": "🔴"}
+        state_icons = {"NOMINAL": "🟢", "WARNING": "🟡", "RED": "🔴", "REBASE_IN_PROGRESS": "🔄"}
         state_icon = state_icons.get(state_value, "❓")
         st.metric(label="System State", value=f"{state_icon} {state_value}", delta=state_reason[:30] + "..." if len(state_reason) > 30 else state_reason, delta_color="off")
     
@@ -219,6 +227,11 @@ def render_sidebar():
     
     auto_refresh = st.sidebar.checkbox("Live Monitoring (5s)", value=False)
     
+    # Rebase System Section
+    st.sidebar.markdown("---")
+    st.sidebar.header("⚙️ System Rebase")
+    rebase_clicked = st.sidebar.button("🔄 Rebase System", use_container_width=True, disabled=not REBASE_AVAILABLE)
+    
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 📁 Project Info")
     st.sidebar.code("""
@@ -227,12 +240,139 @@ def render_sidebar():
         └── drift_history.db
     """, language="text")
     
-    return limit, auto_refresh
+    return limit, auto_refresh, rebase_clicked
+
+
+# --- COMPONENT: REBASE WIZARD ---
+
+def render_rebase_wizard():
+    """Renders the rebase wizard UI."""
+    st.subheader("🔄 System Rebase Wizard")
+    st.markdown("Use this wizard to reset Sentinel after external changes to your model or data pipeline.")
+    st.markdown("---")
+    
+    workflow = RebaseWorkflow()
+    tracker = SystemStateTracker()
+    
+    # Check if rebase is already in progress
+    if tracker.is_rebase_in_progress():
+        rebase_status = tracker.get_rebase_status()
+        st.warning(f"⏳ Rebase in progress: {rebase_status.get('reason', 'Unknown')} → {rebase_status.get('method', 'Unknown')}")
+        st.caption(f"Started at: {rebase_status.get('started_at', 'Unknown')}")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ Complete Rebase", use_container_width=True):
+                tracker.complete_rebase(success=True, details="Completed via dashboard")
+                st.success("Rebase completed!")
+                st.rerun()
+        with col2:
+            if st.button("❌ Cancel Rebase", use_container_width=True):
+                tracker.cancel_rebase()
+                st.info("Rebase cancelled.")
+                st.rerun()
+        return
+    
+    # Step 1: What changed?
+    st.markdown("### Step 1: What changed?")
+    change_types = workflow.get_change_types()
+    
+    change_type = st.radio(
+        "Select what changed in your system:",
+        options=[ct["value"] for ct in change_types],
+        format_func=lambda x: next((ct["label"] for ct in change_types if ct["value"] == x), x),
+        horizontal=False,
+        key="rebase_change_type"
+    )
+    
+    # Show description for selected change
+    selected_change = next((ct for ct in change_types if ct["value"] == change_type), None)
+    if selected_change:
+        st.caption(f"ℹ️ {selected_change['description']}")
+    
+    st.markdown("---")
+    
+    # Step 2: How to proceed?
+    st.markdown("### Step 2: How should Sentinel adapt?")
+    methods = workflow.get_options_for_change(change_type)
+    
+    if not methods:
+        st.error("No valid rebase methods for this change type.")
+        return
+    
+    method = st.radio(
+        "Select rebase method:",
+        options=[m["value"] for m in methods],
+        format_func=lambda x: next((m["label"] for m in methods if m["value"] == x), x),
+        horizontal=False,
+        key="rebase_method"
+    )
+    
+    # Show description for selected method
+    selected_method = next((m for m in methods if m["value"] == method), None)
+    if selected_method:
+        st.caption(f"ℹ️ {selected_method['description']}")
+    
+    # Configuration for specific methods
+    config_data = {}
+    if method == "new_training_data":
+        st.markdown("---")
+        st.markdown("### Configuration")
+        training_path = st.text_input(
+            "Training data path:",
+            placeholder="/path/to/training/data",
+            help="Absolute path to the directory containing training data"
+        )
+        if training_path:
+            config_data["training_data_path"] = training_path
+    
+    st.markdown("---")
+    
+    # Step 3: Execute
+    st.markdown("### Step 3: Execute Rebase")
+    
+    # Validation
+    can_proceed = True
+    if method == "new_training_data" and not config_data.get("training_data_path"):
+        st.warning("⚠️ Please provide the training data path.")
+        can_proceed = False
+    
+    if st.button("🚀 Start Rebase", use_container_width=True, type="primary", disabled=not can_proceed):
+        success = workflow.start(
+            change_type=change_type,
+            method=method,
+            config_data=config_data
+        )
+        
+        if success:
+            if method == "keep_baseline":
+                st.success("✅ Rebase complete! System returned to NOMINAL.")
+            else:
+                st.info("📊 Rebase started. Check the progress below.")
+            st.rerun()
+        else:
+            st.error("❌ Failed to start rebase. Check logs for details.")
+    
+    # Cancel button
+    if st.button("← Back to Dashboard", use_container_width=True):
+        if 'show_rebase_wizard' in st.session_state:
+            del st.session_state['show_rebase_wizard']
+        st.rerun()
 
 # --- MAIN APP LOGIC ---
 
 def main():
-    limit, auto_refresh = render_sidebar()
+    limit, auto_refresh, rebase_clicked = render_sidebar()
+    
+    # Handle rebase button click
+    if rebase_clicked:
+        st.session_state['show_rebase_wizard'] = True
+    
+    # Check if we should show rebase wizard
+    if st.session_state.get('show_rebase_wizard', False) and REBASE_AVAILABLE:
+        st.title("Sentinel System Rebase")
+        render_rebase_wizard()
+        return  # Don't show normal dashboard during rebase
 
     # Force a reload from disk every time main is called
     df = load_data()
@@ -248,7 +388,7 @@ def main():
     render_drift_chart(df)
     render_history_table(df)
 
-    # 7. Auto Refresh Logic
+    # Auto Refresh Logic
     if auto_refresh:
         time.sleep(5)
         st.rerun()
