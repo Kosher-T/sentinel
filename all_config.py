@@ -23,7 +23,7 @@ GOLDEN_SET_DIR = BASE_DATA_DIR / "golden_set_septuplets"
 
 # --- DRIFT SPECIFIC PATHS ---
 # Where original training data and incoming production data are stored
-ORIGINAL_DATA_PATH = BASE_DATA_DIR / "data_drift" / "original_dataset"
+TRAINING_DATA_PATH = BASE_DATA_DIR / "data_drift" / "training_data"
 INCOMING_DATA_PATH = BASE_DATA_DIR / "data_drift" / "incoming_data"
 ARCHIVED_DATA_PATH = BASE_DATA_DIR / "data_drift" / "history"
 
@@ -90,17 +90,17 @@ DISTILL_MAP = {
 
 # --- DRIFT & DECAY THRESHOLDS ---
 # These are calibrated during setup based on training data
-DECAY_THRESHOLD = None   # % drop in Golden Set performance
-DRIFT_THRESHOLD = None   # % distance limit for incoming production data
+DECAY_THRESHOLD = 5.0
+DRIFT_THRESHOLD = 3.5
 
 # --- CONTINUOUS MONITORING SETTINGS ---
-MONITOR_SCHEDULE = None          # Cron expression
-RETRAIN_TRIGGER_COUNT = None     # Consecutive fails to trigger retrain
-DRIFT_FAILURE_RATIO = None       # Failure ratio for system alert
-TIMEFRAME_WINDOW = None          # Past timeframes for failure ratio
+MONITOR_SCHEDULE = "0 */6 * * *"
+RETRAIN_TRIGGER_COUNT = 5
+DRIFT_FAILURE_RATIO = 0.6
+TIMEFRAME_WINDOW = 5
 
 # --- EXECUTION ENGINE SETTINGS ---
-EXECUTION_DRIVERS_PRIORITY = None  # Options: ["LOCAL"], ["AWS"], ["GCP"], or combinations
-RETRAINING_SCRIPT = None           # Path to training script
-EXECUTION_TIMEOUT = None           # Seconds
-EXPECTED_CHALLENGER_PATH = None    # Expected output path after training
+EXECUTION_DRIVERS_PRIORITY = ['LOCAL']
+RETRAINING_SCRIPT = PROJECT_ROOT / "mock_train.py"
+EXECUTION_TIMEOUT = 3600
+EXPECTED_CHALLENGER_PATH = PROJECT_ROOT / "models/challenger/challenger_v2.pth"
