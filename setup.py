@@ -224,10 +224,14 @@ def calibrate_drift_threshold(part_a: list, part_b: list, model_path: Path) -> f
     """
     Calculate baseline drift by comparing two halves of training data.
     
+    Uses extractor + analyzer directly instead of going through drift_pipeline,
+    since pipeline.print_drift_report() requires DRIFT_THRESHOLD to already be set.
+    
     Returns:
-        Recommended drift threshold
+        Baseline drift score (percentage)
     """
-    from detector_data_drift import pipeline as drift_pipeline
+    import numpy as np
+    from detector_data_drift import extractor, analyzer
     
     # Create temporary directories for the two parts
     temp_dir = Path(tempfile.mkdtemp(prefix="sentinel_calibration_"))
@@ -257,24 +261,69 @@ def calibrate_drift_threshold(part_a: list, part_b: list, model_path: Path) -> f
             if latent_models:
                 latent_model = str(latent_models[0])
         
-        # Run drift analysis
+        # --- Direct extraction (bypassing pipeline) ---
         logging.info("⚖️  Running drift calibration (Part A vs Part B)...")
         print("\n" + "-" * 40)
         
-        drift_score, status = drift_pipeline.run_drift_analysis(
-            baseline_path=dir_a,
-            incoming_path=dir_b,
-            force_recalc=True,
-            latent_model_path=latent_model
-        )
-        
-        print("-" * 40 + "\n")
-        
-        if drift_score is None or status == "ERROR":
-            logging.error("🔴 Drift calibration failed")
+        # Get model specs
+        model_instance, specs = extractor.get_model_specs(latent_model)
+        if specs is None:
+            logging.error("🔴 Could not retrieve model specifications")
             return None
         
+        stack_size = specs.get("stack_size", 1)
+        
+        # Prepare data groups
+        paths_a = sorted(extractor.get_recursive_image_paths(str(dir_a)))
+        paths_b = sorted(extractor.get_recursive_image_paths(str(dir_b)))
+        
+        if stack_size > 1:
+            groups_a = [paths_a[i:i + stack_size] for i in range(0, len(paths_a), stack_size) 
+                        if len(paths_a[i:i + stack_size]) == stack_size]
+            groups_b = [paths_b[i:i + stack_size] for i in range(0, len(paths_b), stack_size) 
+                        if len(paths_b[i:i + stack_size]) == stack_size]
+        else:
+            groups_a = paths_a
+            groups_b = paths_b
+        
+        if not groups_a or not groups_b:
+            logging.error("🔴 Insufficient data for calibration")
+            return None
+        
+        # Extract features
+        logging.info(f"📸 Extracting features for {len(groups_a)} + {len(groups_b)} groups...")
+        emb_a = extractor.extract_features(model_instance, groups_a, specs)
+        emb_b = extractor.extract_features(model_instance, groups_b, specs)
+        
+        # Analyze drift (returns probability 0-1)
+        drift_prob, metrics = analyzer.analyze_drift(emb_a, emb_b)
+        drift_score = drift_prob * 100
+        
+        # Print calibration report
+        print(f"📡 CALIBRATION REPORT")
+        print("-" * 30)
+        print(f"Drift Score: {drift_score:.2f}%")
+        print(f"Part A:      {len(groups_a)} samples")
+        print(f"Part B:      {len(groups_b)} samples")
+        print("-" * 30)
+        print("Metrics Breakdown:")
+        for m, v in metrics.items():
+            print(f" -> {m}: {v:.4f}")
+        print("-" * 40 + "\n")
+        
+        # Cleanup model
+        if model_instance is not None:
+            import keras
+            del model_instance
+            keras.backend.clear_session()
+        
         return drift_score
+        
+    except Exception as e:
+        logging.error(f"🔴 Calibration failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
         
     finally:
         # Cleanup temp directory
