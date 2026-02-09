@@ -90,8 +90,8 @@ DISTILL_MAP = {
 
 # --- DRIFT & DECAY THRESHOLDS ---
 # These are calibrated during setup based on training data
-DECAY_THRESHOLD = 5.0
-DRIFT_THRESHOLD = 3.5
+DECAY_THRESHOLD = 3.0
+DRIFT_THRESHOLD = 3.2
 
 # --- CONTINUOUS MONITORING SETTINGS ---
 MONITOR_SCHEDULE = "0 */6 * * *"
