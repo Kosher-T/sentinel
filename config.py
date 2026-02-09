@@ -21,7 +21,7 @@ GOLDEN_SET_DIR = BASE_DATA_DIR / "golden_set_septuplets"
 
 # --- DRIFT SPECIFIC PATHS ---
 # Where original training data and incoming production data are stored
-ORIGINAL_DATA_PATH = BASE_DATA_DIR / "data_drift" / "original_dataset"
+ORIGINAL_DATA_PATH = BASE_DATA_DIR / "data_drift" / "training_data"
 INCOMING_DATA_PATH = BASE_DATA_DIR / "data_drift" / "incoming_data"
 ARCHIVED_DATA_PATH = BASE_DATA_DIR / "data_drift" / "history" # New: for archiving processed data
 
