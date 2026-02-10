@@ -14,13 +14,15 @@ LAYOUT = "wide"
 DB_PATH = Path("data/data_drift/drift_history.db")
 STATE_PATH = Path("data/data_drift/system_state.json")
 
-# Import rebase workflow
 try:
     from services.rebase_workflow import RebaseWorkflow, RebaseMethod
     from services.system_state_tracker import SystemStateTracker
+    from services.audit_log import SentinelAuditLog
     REBASE_AVAILABLE = True
+    AUDIT_AVAILABLE = True
 except ImportError:
     REBASE_AVAILABLE = False
+    AUDIT_AVAILABLE = False
 
 # --- SETUP PAGE ---
 st.set_page_config(page_title=PAGE_TITLE, page_icon=PAGE_ICON, layout=LAYOUT)
@@ -359,6 +361,117 @@ def render_rebase_wizard():
             del st.session_state['show_rebase_wizard']
         st.rerun()
 
+# --- COMPONENT: AUDIT LOG ---
+
+# Category colors for visual distinction
+CATEGORY_COLORS = {
+    "drift": "#4F46E5",       # Indigo
+    "data": "#0891B2",        # Cyan
+    "training": "#D97706",    # Amber
+    "decay": "#7C3AED",       # Purple
+    "deployment": "#059669",  # Emerald
+    "baseline": "#6366F1",    # Indigo-light
+    "alert": "#DC2626",       # Red
+    "state": "#6B7280",       # Gray
+    "rebase": "#2563EB",      # Blue
+}
+
+CATEGORY_ICONS = {
+    "drift": "📊",
+    "data": "📁",
+    "training": "🏋️",
+    "decay": "🔬",
+    "deployment": "🚀",
+    "baseline": "📐",
+    "alert": "🚨",
+    "state": "🔄",
+    "rebase": "♻️",
+}
+
+def render_audit_log():
+    """Renders the audit log timeline with filters."""
+    if not AUDIT_AVAILABLE:
+        return
+    
+    st.markdown("---")
+    st.subheader("📝 Audit Log")
+    
+    audit = SentinelAuditLog()
+    
+    # Filters row
+    col_filter, col_limit = st.columns([3, 1])
+    
+    with col_filter:
+        all_categories = list(CATEGORY_COLORS.keys())
+        selected_categories = st.multiselect(
+            "Filter by category",
+            options=all_categories,
+            default=[],
+            format_func=lambda x: f"{CATEGORY_ICONS.get(x, '')} {x.title()}",
+            key="audit_category_filter"
+        )
+    
+    with col_limit:
+        audit_limit = st.selectbox("Entries", options=[25, 50, 100, 200], index=1, key="audit_limit")
+    
+    # Fetch entries
+    if selected_categories:
+        # Query each selected category and merge
+        entries = []
+        for cat in selected_categories:
+            entries.extend(audit.query(category=cat, limit=audit_limit))
+        # Sort by timestamp descending
+        entries.sort(key=lambda x: x["timestamp"], reverse=True)
+        entries = entries[:audit_limit]
+    else:
+        entries = audit.get_timeline(limit=audit_limit)
+    
+    if not entries:
+        st.info("No audit entries recorded yet. Entries will appear after Sentinel runs.")
+        return
+    
+    # Summary counts
+    counts = audit.get_category_counts()
+    if counts:
+        count_cols = st.columns(min(len(counts), 6))
+        for i, (cat, count) in enumerate(list(counts.items())[:6]):
+            icon = CATEGORY_ICONS.get(cat, "📌")
+            with count_cols[i % len(count_cols)]:
+                st.metric(label=f"{icon} {cat.title()}", value=count)
+    
+    st.markdown("")
+    
+    # Build dataframe for display
+    rows = []
+    for entry in entries:
+        details_str = ""
+        if entry["details"]:
+            details_str = ", ".join(f"{k}={v}" for k, v in entry["details"].items())
+        
+        rows.append({
+            "Time": entry["timestamp"],
+            "Category": f"{CATEGORY_ICONS.get(entry['category'], '📌')} {entry['category']}",
+            "Action": entry["action"],
+            "Status": "✅" if entry["status"] == "success" else "❌" if entry["status"] == "failure" else "⚠️",
+            "Details": details_str,
+        })
+    
+    df_audit = pd.DataFrame(rows)
+    
+    st.dataframe(
+        df_audit,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Time": st.column_config.TextColumn("Time", width="medium"),
+            "Category": st.column_config.TextColumn("Category", width="small"),
+            "Action": st.column_config.TextColumn("Action", width="small"),
+            "Status": st.column_config.TextColumn("Status", width="small"),
+            "Details": st.column_config.TextColumn("Details", width="large"),
+        }
+    )
+
+
 # --- MAIN APP LOGIC ---
 
 def main():
@@ -387,6 +500,7 @@ def main():
     render_metrics(df)
     render_drift_chart(df)
     render_history_table(df)
+    render_audit_log()
 
     # Auto Refresh Logic
     if auto_refresh:

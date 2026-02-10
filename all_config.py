@@ -56,6 +56,7 @@ CRITICAL_LOG_ERRORS = ["nan", "inf", "Out of memory", "CUDA_ERROR_OUT_OF_MEMORY"
 DRIFT_HISTORY_DB = DRIFT_MONITOR_ROOT / "drift_history.db"
 SYSTEM_STATE_FILE = DRIFT_MONITOR_ROOT / "system_state.json"
 RETRAIN_LOG = DRIFT_MONITOR_ROOT / "retrain_events.json"
+AUDIT_LOG_DB = DRIFT_MONITOR_ROOT / "audit_log.db"
 MODEL_HISTORY_FILE = MODEL_DECAY_ROOT / "model_run_history.json"
 
 # --- HARDWARE ---

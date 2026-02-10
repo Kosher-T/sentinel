@@ -24,6 +24,7 @@ try:
     from services.golden_set_curator import GoldenSetCurator
     from services.data_rotator import DataRotator
     from services.system_state_tracker import SystemStateTracker
+    from services.audit_log import SentinelAuditLog
 except ImportError:
     # Fallback if running from a different context
     from execution_engine import ExecutionEngine  # type: ignore
@@ -31,6 +32,7 @@ except ImportError:
     from golden_set_curator import GoldenSetCurator  # type: ignore
     from data_rotator import DataRotator  # type: ignore
     from system_state_tracker import SystemStateTracker  # type: ignore
+    from audit_log import SentinelAuditLog  # type: ignore
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] SENTINEL: %(message)s')
@@ -41,6 +43,7 @@ class SentinelWatch:
         self._init_db()
         self.alert_engine = SentinelAlert()
         self.state_tracker = SystemStateTracker()
+        self.audit = SentinelAuditLog()
 
     def _init_db(self):
         """Initializes the SQLite database if it doesn't exist."""
@@ -80,6 +83,9 @@ class SentinelWatch:
         metrics_str = f" | Metrics: {metrics}" if metrics else ""
         print(f"\n🚨 [ALERT - {level}] {message}{metrics_str}\n")
         
+        # Audit trail
+        self.audit.log("alert", "fire", {"level": level, "event_type": event_type, "message": message})
+        
         # Fire actual alert
         try:
             self.alert_engine.fire(int_level, event_type, message, metrics)
@@ -88,10 +94,12 @@ class SentinelWatch:
 
     def simulate_deployment(self, new_model_path):
         logging.info(f"Deploying Challenger Model ({new_model_path.name}) to Production...")
+        self.audit.log("deployment", "start", {"model": new_model_path.name})
         # In a real scenario, this would move files:
         # shutil.move(new_model_path, config.OLD_MODEL_PATH / "production_vX.pth")
         time.sleep(2)
         logging.info("🟢 Deployment Complete. New model is live.")
+        self.audit.log("deployment", "success", {"model": new_model_path.name})
 
     def archive_incoming_data(self, score, status):
         """
@@ -111,12 +119,14 @@ class SentinelWatch:
                 # Move contents, not the folder itself, to preserve the mount point/folder structure
                 for item in config.INCOMING_DATA_PATH.iterdir():
                     shutil.move(str(item), str(dest_dir))
+                self.audit.log("data", "archive", {"dest_dir": str(dest_dir)})
                 return str(dest_dir)
             else:
                 logging.warning(f"   -> No data found in {config.INCOMING_DATA_PATH} to archive.")
                 return None
         except Exception as e:
             logging.error(f"   -> Archive failed: {e}")
+            self.audit.log("data", "archive", {"error": str(e)}, status="error")
             return None
 
     def discard_incoming_data(self):
@@ -133,10 +143,12 @@ class SentinelWatch:
                     else:
                         item.unlink()
                 logging.info("✅ Incoming data discarded successfully.")
+                self.audit.log("data", "discard")
             else:
                 logging.info("   -> No data found in incoming folder.")
         except Exception as e:
             logging.error(f"🔴 Failed to discard incoming data: {e}")
+            self.audit.log("data", "discard", {"error": str(e)}, status="error")
 
     def purge_drift_history(self):
         """
@@ -149,8 +161,10 @@ class SentinelWatch:
                 shutil.rmtree(config.ARCHIVED_DATA_PATH)
                 config.ARCHIVED_DATA_PATH.mkdir(parents=True, exist_ok=True)
                 logging.info("🟢 History purged. Ready for new cycle.")
+                self.audit.log("data", "purge_history")
         except Exception as e:
             logging.error(f"🔴 Failed to purge history: {e}")
+            self.audit.log("data", "purge_history", {"error": str(e)}, status="error")
 
     def update_baselines(self, deployed_model_path: Path):
         """
@@ -180,10 +194,13 @@ class SentinelWatch:
             exit_code = curator.curate()
             if exit_code == 0:
                 logging.info("✅ Golden Set updated successfully")
+                self.audit.log("baseline", "golden_set_update")
             else:
                 logging.warning("⚠️ Golden Set update had issues, check logs")
+                self.audit.log("baseline", "golden_set_update", {"exit_code": exit_code}, status="failure")
         except Exception as e:
             logging.error(f"🔴 Golden Set update failed: {e}")
+            self.audit.log("baseline", "golden_set_update", {"error": str(e)}, status="error")
         
         # 2. Rotate drifted data into TRAINING_DATA_PATH
         try:
@@ -196,10 +213,13 @@ class SentinelWatch:
             )
             if success:
                 logging.info("✅ TRAINING_DATA_PATH updated successfully")
+                self.audit.log("baseline", "training_data_update")
             else:
                 logging.warning("⚠️ TRAINING_DATA_PATH rotation had issues")
+                self.audit.log("baseline", "training_data_update", status="failure")
         except Exception as e:
             logging.error(f"🔴 TRAINING_DATA_PATH rotation failed: {e}")
+            self.audit.log("baseline", "training_data_update", {"error": str(e)}, status="error")
 
     # --- CORE PIPELINES ---
 
@@ -273,9 +293,11 @@ class SentinelWatch:
             
             if simulated_decay_score > config.DECAY_THRESHOLD:
                 logging.error(f"🔴 DECAY CHECK FAILED. Score {simulated_decay_score:.2f}% > Threshold {config.DECAY_THRESHOLD}%")
+                self.audit.log("decay", "check_fail", {"score": round(simulated_decay_score, 2), "threshold": config.DECAY_THRESHOLD}, status="failure")
                 return False
             else:
                 logging.info(f"🟢 Decay Check Passed. Score {simulated_decay_score:.2f}% < Threshold {config.DECAY_THRESHOLD}%")
+                self.audit.log("decay", "check_pass", {"score": round(simulated_decay_score, 2), "threshold": config.DECAY_THRESHOLD})
                 return True
 
         except Exception as e:
@@ -292,6 +314,13 @@ class SentinelWatch:
         drift_score, status = pipeline.run_drift_check()
         
         if drift_score is None: return
+
+        # Audit the drift check result
+        self.audit.log(
+            "drift", f"check_{status.lower()}",
+            {"score": round(drift_score, 2), "threshold": config.DRIFT_THRESHOLD},
+            status="success" if status == "PASS" else "failure"
+        )
 
         # 1. Handle data based on drift status
         if status == "PASS":
@@ -321,6 +350,7 @@ class SentinelWatch:
 
         if is_triggered:
             logging.info("--- STEP 2: TRIGGER RETRAINING (EXECUTION ENGINE) ---")
+            self.audit.log("drift", "threshold_triggered", {"fails": fails, "total": total})
             self.send_alert("WARNING", f"Drift threshold exceeded ({fails}/{total} in window). Initiating Retraining.", event_type="retraining")
             
             # Initialize Engine
@@ -328,16 +358,19 @@ class SentinelWatch:
             
             # We point the engine to ARCHIVED_DATA_PATH to include all recent failures + the current batch
             logging.info(f"🚀 Dispatching Training Job using data from: {config.ARCHIVED_DATA_PATH}")
+            self.audit.log("training", "start", {"data_path": str(config.ARCHIVED_DATA_PATH)})
             success, challenger_model_path, result_payload = engine.run_training(data_path=config.ARCHIVED_DATA_PATH)
             
             if not success:
                 logging.critical(f"🔴 Retraining Failed: {result_payload}")
+                self.audit.log("training", "failure", {"error": str(result_payload)}, status="failure")
                 self.send_alert("CRITICAL", f"Automated Retraining Failed: {result_payload}", event_type="retraining_error")
                 self.state_tracker.update_from_event("retraining", success=False, details=str(result_payload))
                 return
 
             # If success, result_payload contains metrics (Loss/Accuracy)
             logging.info(f"✅ Retraining Complete. Metrics: {result_payload}")
+            self.audit.log("training", "success", {"metrics": result_payload})
             self.send_alert("INFO", "Retraining Success. Proceeding to Validation.", event_type="retraining", metrics=result_payload)
             self.state_tracker.update_from_event("retraining", success=True)
             

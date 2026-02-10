@@ -18,8 +18,10 @@ logging.basicConfig(level=logging.INFO, format='[%(asctime)s] REBASE: %(message)
 
 try:
     from services.system_state_tracker import SystemStateTracker
+    from services.audit_log import SentinelAuditLog
 except ImportError:
     from system_state_tracker import SystemStateTracker
+    from audit_log import SentinelAuditLog  # type: ignore
 
 try:
     import all_config as config
@@ -114,6 +116,7 @@ class RebaseWorkflow:
             state_tracker: Optional SystemStateTracker instance (creates one if not provided)
         """
         self.state_tracker = state_tracker or SystemStateTracker()
+        self.audit = SentinelAuditLog()
         self._progress = {
             "phase": None,
             "message": "",
@@ -210,6 +213,7 @@ class RebaseWorkflow:
         }
         
         logging.info(f"🔄 Starting rebase: {change_type} → {method}")
+        self.audit.log("rebase", "start", {"change_type": change_type, "method": method, "config": config_data or {}})
         
         # Execute based on method
         if rm == RebaseMethod.KEEP_BASELINE:
@@ -340,6 +344,7 @@ class RebaseWorkflow:
             details: Optional message
         """
         self.state_tracker.complete_rebase(success=success, details=details)
+        self.audit.log("rebase", "complete", {"success": success, "details": details}, status="success" if success else "failure")
         
         self._progress["phase"] = "complete" if success else "failed"
         self._progress["message"] = details or ("Rebase complete" if success else "Rebase failed")
@@ -348,6 +353,7 @@ class RebaseWorkflow:
     def cancel(self) -> None:
         """Cancel the current rebase operation."""
         self.state_tracker.cancel_rebase()
+        self.audit.log("rebase", "cancel")
         
         self._progress["phase"] = "cancelled"
         self._progress["message"] = "Rebase cancelled"
