@@ -26,6 +26,11 @@ def analyze_drift(baseline, current):
     """
     Compares two embedding distributions. 
     Adjusted to be less sensitive to magnitude shifts and trust Cosine more.
+    
+    Returns:
+        drift_probability: float between 0 and 1
+        metrics_breakdown: dict of aggregate metric values
+        root_cause: dict with per-component breakdown, primary drivers, and drift pattern
     """
     if len(baseline.shape) > 2:
         baseline = baseline.reshape(baseline.shape[0], -1)
@@ -38,8 +43,15 @@ def analyze_drift(baseline, current):
     b_pca = pca.fit_transform(baseline)
     c_pca = pca.transform(current)
 
-    avg_wd = np.mean([wasserstein_distance(b_pca[:, i], c_pca[:, i]) for i in range(b_pca.shape[1])])
-    avg_kl = np.mean([kl_divergence(b_pca[:, i], c_pca[:, i]) for i in range(b_pca.shape[1])]) # type:ignore
+    # Per-component metrics (keep individual scores for root cause)
+    per_component_wd = [wasserstein_distance(b_pca[:, i], c_pca[:, i]) for i in range(b_pca.shape[1])]
+    per_component_kl = [kl_divergence(b_pca[:, i], c_pca[:, i]) for i in range(b_pca.shape[1])]
+    
+    # Explained variance ratio from PCA (how important each component is)
+    explained_variance = pca.explained_variance_ratio_
+
+    avg_wd = np.mean(per_component_wd)
+    avg_kl = np.mean(per_component_kl)
 
     b_centroid = np.mean(baseline, axis=0).reshape(1, -1)
     c_centroid = np.mean(current, axis=0).reshape(1, -1)
@@ -76,4 +88,49 @@ def analyze_drift(baseline, current):
         "Linear MMD": mmd_val
     }
 
-    return drift_probability, metrics_breakdown
+    # --- STEP 4: Root Cause Breakdown ---
+    # Each component's "contribution" = its drift magnitude weighted by its explained variance
+    per_component = []
+    for i in range(n_components):
+        # Normalize individual WD using same squashing as aggregate
+        s_wd_i = 1 - np.exp(-0.05 * per_component_wd[i])
+        s_kl_i = 1 - np.exp(-0.2 * per_component_kl[i])
+        # Combined drift score for this component
+        component_drift = (s_wd_i + s_kl_i) / 2
+        # Weight by how much variance this component explains
+        contribution = float(component_drift * explained_variance[i])
+        
+        per_component.append({
+            "component": i + 1,
+            "wasserstein": round(float(per_component_wd[i]), 4),
+            "kl_divergence": round(float(per_component_kl[i]), 4),
+            "explained_variance": round(float(explained_variance[i]), 4),
+            "drift_score": round(float(component_drift), 4),
+            "contribution": round(contribution, 6),
+        })
+    
+    # Sort by contribution (highest first)
+    per_component.sort(key=lambda x: x["contribution"], reverse=True)
+    
+    # Primary drivers: top 3
+    primary_drivers = per_component[:3]
+    
+    # Drift pattern classification
+    # Count how many components have meaningful drift (drift_score > 0.1)
+    drifting_count = sum(1 for c in per_component if c["drift_score"] > 0.1)
+    if drifting_count <= 2:
+        drift_pattern = "localized"
+    elif drifting_count <= 4:
+        drift_pattern = "moderate"
+    else:
+        drift_pattern = "widespread"
+    
+    root_cause = {
+        "per_component": per_component,
+        "primary_drivers": primary_drivers,
+        "drift_pattern": drift_pattern,
+        "drifting_components": drifting_count,
+        "total_components": n_components,
+    }
+
+    return drift_probability, metrics_breakdown, root_cause

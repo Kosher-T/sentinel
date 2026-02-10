@@ -311,14 +311,22 @@ class SentinelWatch:
         
         logging.info("--- STEP 1: MONITOR DATA DRIFT ---")
         logging.info("ℹ️ Running Drift Check on CPU (this may take a moment for large batches)...")
-        drift_score, status = pipeline.run_drift_check()
+        drift_score, status, root_cause = pipeline.run_drift_check()
         
         if drift_score is None: return
 
         # Audit the drift check result
+        drift_details = {"score": round(drift_score, 2), "threshold": config.DRIFT_THRESHOLD}
+        if root_cause and status != "PASS":
+            drift_details["drift_pattern"] = root_cause.get("drift_pattern", "unknown")
+            drift_details["drifting_components"] = root_cause.get("drifting_components", 0)
+            drift_details["primary_drivers"] = [
+                {"component": d["component"], "drift_score": d["drift_score"]}
+                for d in root_cause.get("primary_drivers", [])
+            ]
         self.audit.log(
             "drift", f"check_{status.lower()}",
-            {"score": round(drift_score, 2), "threshold": config.DRIFT_THRESHOLD},
+            drift_details,
             status="success" if status == "PASS" else "failure"
         )
 
@@ -351,7 +359,13 @@ class SentinelWatch:
         if is_triggered:
             logging.info("--- STEP 2: TRIGGER RETRAINING (EXECUTION ENGINE) ---")
             self.audit.log("drift", "threshold_triggered", {"fails": fails, "total": total})
-            self.send_alert("WARNING", f"Drift threshold exceeded ({fails}/{total} in window). Initiating Retraining.", event_type="retraining")
+            
+            # Build alert message with root cause context
+            alert_msg = f"Drift threshold exceeded ({fails}/{total} in window). Initiating Retraining."
+            if root_cause:
+                pattern = root_cause.get('drift_pattern', 'unknown')
+                alert_msg += f" Pattern: {pattern} ({root_cause.get('drifting_components', '?')}/{root_cause.get('total_components', '?')} components)."
+            self.send_alert("WARNING", alert_msg, event_type="retraining")
             
             # Initialize Engine
             engine = ExecutionEngine()

@@ -186,6 +186,69 @@ def render_drift_chart(df):
 
     st.plotly_chart(fig, width='stretch')
 
+def render_root_cause():
+    """Renders drift root cause breakdown from the latest audit log FAIL entry."""
+    if not AUDIT_AVAILABLE:
+        return
+    
+    audit = SentinelAuditLog()
+    # Get the latest drift FAIL entry that has root cause data
+    fail_entries = audit.query(category="drift", action="check_fail", limit=1)
+    
+    if not fail_entries:
+        return
+    
+    entry = fail_entries[0]
+    details = entry.get("details", {})
+    
+    if not details or "primary_drivers" not in details:
+        return
+    
+    st.subheader("🔍 Drift Root Cause Analysis")
+    
+    # Pattern indicator
+    pattern = details.get("drift_pattern", "unknown")
+    drifting = details.get("drifting_components", 0)
+    pattern_config = {
+        "localized": {"icon": "🎯", "color": "#F59E0B", "desc": "Drift concentrated in few features"},
+        "moderate": {"icon": "🔶", "color": "#F97316", "desc": "Drift spread across several features"},
+        "widespread": {"icon": "🌊", "color": "#EF4444", "desc": "Drift affecting most features"},
+    }
+    p = pattern_config.get(pattern, {"icon": "❓", "color": "#6B7280", "desc": "Unknown"})
+    
+    col_pattern, col_info = st.columns([1, 2])
+    with col_pattern:
+        st.metric(label="Drift Pattern", value=f"{p['icon']} {pattern.upper()}", delta=f"{drifting} components drifting", delta_color="off")
+    with col_info:
+        st.caption(p["desc"])
+        st.caption(f"From: {entry.get('timestamp', 'N/A')}")
+    
+    # Bar chart of primary drivers
+    drivers = details.get("primary_drivers", [])
+    if drivers:
+        components = [f"Component {d['component']}" for d in drivers]
+        scores = [d["drift_score"] for d in drivers]
+        
+        colors = ["#EF4444" if s > 0.5 else "#F59E0B" if s > 0.2 else "#22C55E" for s in scores]
+        
+        fig = go.Figure(go.Bar(
+            x=scores,
+            y=components,
+            orientation='h',
+            marker_color=colors,
+            text=[f"{s:.4f}" for s in scores],
+            textposition='auto',
+        ))
+        fig.update_layout(
+            title="Top Drift Drivers (by contribution)",
+            xaxis_title="Drift Score",
+            yaxis_title="",
+            margin=dict(l=0, r=0, t=40, b=0),
+            height=200,
+            yaxis=dict(autorange="reversed"),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
 def render_history_table(df):
     """Renders the detailed history table with visual enhancements."""
     st.subheader("📜 Execution History")
@@ -499,6 +562,7 @@ def main():
 
     render_metrics(df)
     render_drift_chart(df)
+    render_root_cause()
     render_history_table(df)
     render_audit_log()
 

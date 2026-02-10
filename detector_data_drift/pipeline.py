@@ -84,7 +84,7 @@ def prepare_data_groups(directory, stack_size, domain):
             
     return grouped_data
 
-def print_drift_report(score, metrics_breakdown, num_baseline, num_incoming):
+def print_drift_report(score, metrics_breakdown, num_baseline, num_incoming, root_cause=None):
     """Prints a clean, formatted report to the console."""
     threshold = getattr(config, 'DRIFT_THRESHOLD', 25.0)
     status = "FAIL" if score > threshold else "PASS"
@@ -101,6 +101,22 @@ def print_drift_report(score, metrics_breakdown, num_baseline, num_incoming):
     print("Metrics Breakdown:")
     for m, v in metrics_breakdown.items():
         print(f" -> {m}: {v:.4f}")
+    
+    # Root cause analysis (show when drift is detected)
+    if root_cause and status == "FAIL":
+        print("-" * 30)
+        pattern = root_cause.get("drift_pattern", "unknown")
+        drifting = root_cause.get("drifting_components", 0)
+        total = root_cause.get("total_components", 0)
+        pattern_icons = {"localized": "🎯", "moderate": "🔶", "widespread": "🌊"}
+        print(f"🔍 ROOT CAUSE ANALYSIS")
+        print(f"Pattern:     {pattern_icons.get(pattern, '❓')} {pattern.upper()} ({drifting}/{total} components drifting)")
+        print(f"Top Drivers:")
+        for driver in root_cause.get("primary_drivers", []):
+            bar_len = int(driver['drift_score'] * 20)
+            bar = "█" * bar_len + "░" * (20 - bar_len)
+            print(f" -> Component {driver['component']:2d}: [{bar}] {driver['drift_score']:.4f} (var: {driver['explained_variance']:.1%})")
+    
     print("-" * 30)
     return status
 
@@ -193,18 +209,18 @@ def run_drift_analysis(baseline_path, incoming_path, force_recalc=False, latent_
 
         # --- PHASE 4: ANALYSIS ---
         print("\n⚖️  Calculating multi-metric distribution divergence...")
-        drift_prob, metrics_breakdown = analyzer.analyze_drift(baseline_emb, incoming_emb)  # type: ignore
+        drift_prob, metrics_breakdown, root_cause = analyzer.analyze_drift(baseline_emb, incoming_emb)  # type: ignore
         
         final_percentage = drift_prob * 100
-        status = print_drift_report(final_percentage, metrics_breakdown, len(baseline_groups), len(incoming_groups))
+        status = print_drift_report(final_percentage, metrics_breakdown, len(baseline_groups), len(incoming_groups), root_cause)
         
-        return final_percentage, status
+        return final_percentage, status, root_cause
         
     except Exception as e:
         print(f"\n🔴 Analysis failed: {e}")
         import traceback
         traceback.print_exc()
-        return None, "ERROR"
+        return None, "ERROR", None
     
     finally:
         if model_instance is not None:
