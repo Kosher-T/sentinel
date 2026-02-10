@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 # --- DATA SOURCE PATHS (THE GOLDEN SET) ---
 # The 'Golden Set' is the ground-truth benchmark for model performance
 BASE_DATA_DIR = PROJECT_ROOT / "data"
-GOLDEN_SET_DIR = BASE_DATA_DIR / "golden_set_septuplets"
+GOLDEN_SET_DIR = BASE_DATA_DIR / "golden_set"
 
 # --- DRIFT SPECIFIC PATHS ---
 # Where original training data and incoming production data are stored
@@ -91,8 +91,8 @@ DISTILL_MAP = {
 
 # --- DRIFT & DECAY THRESHOLDS ---
 # These are calibrated during setup based on training data
-DECAY_THRESHOLD = 3.0
-DRIFT_THRESHOLD = 3.2
+DECAY_THRESHOLD = 2.0
+DRIFT_THRESHOLD = 1.6
 
 # --- CONTINUOUS MONITORING SETTINGS ---
 MONITOR_SCHEDULE = "0 */6 * * *"
