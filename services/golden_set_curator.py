@@ -36,6 +36,7 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 import all_config as config
+from detector_data_drift.smart_stacking import build_groups, get_model_input_specs
 
 # --- Framework Imports (handled gracefully) ---
 try:
@@ -125,8 +126,17 @@ class ModelInferenceWrapper:
         self.framework = None
         self.input_shape = None
         
+        # Get input specs (stack_size, dimensions) from model
+        specs = get_model_input_specs(model_path)
+        self.stack_size = specs["stack_size"] if specs else 1
+        self.target_h = specs["target_h"] if specs else 224
+        self.target_w = specs["target_w"] if specs else 224
+        self.expected_channels = specs["expected_channels"] if specs else 3
+        
         self._detect_framework()
         self._load_model()
+        
+        logging.info(f"   Stack size: {self.stack_size}, Target: {self.target_h}×{self.target_w}, Channels: {self.expected_channels}")
     
     def _detect_framework(self) -> str:
         """
@@ -223,49 +233,52 @@ class ModelInferenceWrapper:
             logging.error(f"🔴 Failed to load ONNX model: {e}")
             raise
     
-    def _preprocess_input(self, input_path: Path) -> Optional[Any]:
+    def _preprocess_input(self, input_paths) -> Optional[Any]:
         """
         Preprocess input data for inference.
         
         Handles:
-        - Single images → load and normalize
-        - Directories of images → load all as batch/sequence
+        - Single file path (str or Path) → load as single image
+        - List of paths (group) → load and stack on channel axis for multi-input models
+        - Directory path → load all images in directory
         
         Args:
-            input_path: Path to input file or directory
+            input_paths: Single path, list of paths, or directory path
             
         Returns:
-            Preprocessed numpy array ready for inference
+            Preprocessed numpy array ready for inference, shape (1, H, W, C)
         """
         if np is None:
             logging.error("NumPy is required for preprocessing")
             return None
         
         try:
-            images = []
+            # Normalize input to a list of file paths
+            file_paths = self._resolve_input_paths(input_paths)
             
-            if input_path.is_dir():
-                # Load all images in directory (sorted for consistent ordering)
-                image_files = sorted([
-                    f for f in input_path.iterdir()
-                    if f.suffix.lower() in self.IMAGE_EXTENSIONS
-                ])
-                for img_file in image_files:
-                    img = self._load_image(img_file)
-                    if img is not None:
-                        images.append(img)
-            else:
-                # Single file
-                img = self._load_image(input_path)
+            if not file_paths:
+                logging.warning(f"⚠️ No valid files resolved from input")
+                return None
+            
+            # Load all images
+            images = []
+            for fp in file_paths:
+                img = self._load_image(Path(fp))
                 if img is not None:
                     images.append(img)
             
             if not images:
-                logging.warning(f"⚠️ No valid images found in {input_path}")
+                logging.warning(f"⚠️ No images loaded successfully")
                 return None
             
-            # Stack into batch
-            batch = np.stack(images, axis=0)
+            # Build the input tensor
+            if self.stack_size > 1 and len(images) >= self.stack_size:
+                # Channel-axis concatenation: (H, W, 3) × N → (H, W, 3N)
+                stacked = np.concatenate(images[:self.stack_size], axis=-1)
+                batch = np.expand_dims(stacked, axis=0)  # (1, H, W, C*N)
+            else:
+                # Single image or stack_size=1: standard batch
+                batch = np.stack(images, axis=0)  # (N, H, W, C)
             
             # Normalize to [0, 1] if not already
             if batch.max() > 1.0:
@@ -276,6 +289,30 @@ class ModelInferenceWrapper:
         except Exception as e:
             logging.error(f"🔴 Preprocessing failed: {e}")
             return None
+    
+    def _resolve_input_paths(self, input_paths) -> List[str]:
+        """
+        Normalize various input types to a flat list of file paths.
+        
+        Accepts:
+        - str or Path (single file or directory)
+        - List[str] or List[Path] (group of files)
+        """
+        if isinstance(input_paths, (str, Path)):
+            p = Path(input_paths)
+            if p.is_dir():
+                return sorted([
+                    str(f) for f in p.iterdir()
+                    if f.is_file() and f.suffix.lower() in self.IMAGE_EXTENSIONS
+                ])
+            elif p.is_file():
+                return [str(p)]
+            return []
+        
+        if isinstance(input_paths, list):
+            return [str(p) for p in input_paths if Path(p).is_file()]
+        
+        return []
     
     def _load_image(self, image_path: Path) -> Optional[Any]:
         """
@@ -419,7 +456,7 @@ class ModelInferenceWrapper:
             logging.error(f"🔴 Failed to save output: {e}")
             return False
     
-    def generate_baseline(self, input_path: Path, output_dir: Path) -> bool:
+    def generate_baseline(self, input_data, output_dir: Path) -> bool:
         """
         Run inference on input data and save the result as baseline.
         
@@ -430,14 +467,19 @@ class ModelInferenceWrapper:
         4. Saves the model output to output_dir/output/
         
         Args:
-            input_path: Path to the input sample (file or directory)
+            input_data: Path to input sample (file or dir), or list of paths (group)
             output_dir: Directory where input + output pair should be saved
             
         Returns:
             True if baseline was generated successfully, False otherwise
         """
         try:
-            logging.info(f"   -> Generating baseline for: {input_path.name}")
+            # Determine label for logging
+            if isinstance(input_data, list):
+                label = f"group of {len(input_data)} files"
+            else:
+                label = Path(input_data).name
+            logging.info(f"   -> Generating baseline for: {label}")
             
             # Create output directory structure
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -449,18 +491,24 @@ class ModelInferenceWrapper:
             output_dest.mkdir(exist_ok=True)
             
             # Copy input data
-            if input_path.is_dir():
-                for item in input_path.iterdir():
+            if isinstance(input_data, list):
+                # Group of files
+                for p in input_data:
+                    src = Path(p)
+                    if src.is_file():
+                        shutil.copy2(src, input_dest / src.name)
+            elif Path(input_data).is_dir():
+                for item in Path(input_data).iterdir():
                     if item.is_file():
                         shutil.copy2(item, input_dest / item.name)
             else:
-                shutil.copy2(input_path, input_dest / input_path.name)
+                src = Path(input_data)
+                shutil.copy2(src, input_dest / src.name)
             
             # Preprocess input
-            preprocessed = self._preprocess_input(input_path)
+            preprocessed = self._preprocess_input(input_data)
             if preprocessed is None:
-                logging.warning(f"⚠️ Could not preprocess {input_path.name}, saving input only")
-                # Still return True - input was saved, just no prediction
+                logging.warning(f"⚠️ Could not preprocess {label}, saving input only")
                 marker = output_dest / ".preprocessing_failed"
                 marker.write_text(f"Preprocessing failed at: {datetime.now().isoformat()}\n")
                 return True
@@ -468,14 +516,14 @@ class ModelInferenceWrapper:
             # Run inference
             output = self._run_inference(preprocessed)
             if output is None:
-                logging.warning(f"⚠️ Inference failed for {input_path.name}, saving input only")
+                logging.warning(f"⚠️ Inference failed for {label}, saving input only")
                 marker = output_dest / ".inference_failed"
                 marker.write_text(f"Inference failed at: {datetime.now().isoformat()}\n")
                 return True
             
             # Save output
             if not self._save_output(output, output_dest):
-                logging.warning(f"⚠️ Could not save output for {input_path.name}")
+                logging.warning(f"⚠️ Could not save output for {label}")
                 return True  # Input was saved
             
             # Success marker
@@ -484,6 +532,7 @@ class ModelInferenceWrapper:
                 f"Generated at: {datetime.now().isoformat()}\n"
                 f"Model: {self.model_path.name}\n"
                 f"Framework: {self.framework}\n"
+                f"Stack size: {self.stack_size}\n"
                 f"Input shape: {preprocessed.shape}\n"
                 f"Output shape: {output.shape if hasattr(output, 'shape') else 'N/A'}\n"
             )
@@ -491,7 +540,7 @@ class ModelInferenceWrapper:
             return True
             
         except Exception as e:
-            logging.error(f"🔴 Failed to generate baseline for {input_path.name}: {e}")
+            logging.error(f"🔴 Failed to generate baseline for {label}: {e}")
             return False
 
 
@@ -647,31 +696,30 @@ class GoldenSetCurator:
             logging.error(f"🔴 Backup failed: {e}")
             return None
     
-    def _collect_samples(self) -> List[Path]:
+    def _collect_samples(self) -> List:
         """
-        Collect all available samples from input directories.
+        Collect and group samples from input directories using smart stacking.
         
-        Samples can be either individual files or directories (for multi-file inputs
-        like video frames or image sequences).
+        Uses build_groups() to respect folder structure and model stack_size.
+        Returns groups when stack_size > 1, individual paths when stack_size == 1.
         
         Returns:
-            List of paths to available samples
+            List of groups (List[List[str]]) or individual paths (List[str])
         """
-        samples = []
+        all_groups = []
+        stack_size = 1
+        
+        # Get stack_size from inference wrapper if available
+        if self.inference_wrapper is not None:
+            stack_size = self.inference_wrapper.stack_size
         
         for input_dir in self.input_dirs:
             logging.info(f"🔍 Scanning: {input_dir}")
-            
-            for item in input_dir.iterdir():
-                # Skip hidden files and system files
-                if item.name.startswith('.'):
-                    continue
-                
-                # Include both files and directories as valid samples
-                samples.append(item)
+            groups = build_groups(input_dir, stack_size)
+            all_groups.extend(groups)
         
-        logging.info(f"📊 Found {len(samples)} potential samples in input directories")
-        return samples
+        logging.info(f"📊 Found {len(all_groups)} sample groups (stack_size={stack_size})")
+        return all_groups
     
     def _sample_random(self, items: List[Path], count: int) -> List[Path]:
         """
@@ -714,7 +762,10 @@ class GoldenSetCurator:
         """
         logging.info("🚀 Starting CREATE mode...")
         
-        # Collect all available samples
+        # Initialize inference wrapper FIRST (needed for stack_size in _collect_samples)
+        self.inference_wrapper = ModelInferenceWrapper(self.model_path)
+        
+        # Collect all available samples (uses smart stacking with model's stack_size)
         all_samples = self._collect_samples()
         if not all_samples:
             logging.error("🔴 No samples found in input directories")
@@ -724,21 +775,18 @@ class GoldenSetCurator:
         selected = self._sample_random(all_samples, self.sample_size)
         logging.info(f"📋 Selected {len(selected)} samples for Golden Set")
         
-        # Initialize inference wrapper
-        self.inference_wrapper = ModelInferenceWrapper(self.model_path)
-        
         # Use atomic writes: build in temp dir first
         if self.temp_dir.exists():
             shutil.rmtree(self.temp_dir)
         self.temp_dir.mkdir(parents=True)
         
         try:
-            # Process each selected sample
+            # Process each selected sample (may be a group or individual path)
             success_count = 0
-            for i, sample_path in enumerate(selected, 1):
+            for i, sample_data in enumerate(selected, 1):
                 sample_dest = self.temp_dir / f"sample_{i:04d}"
                 
-                if self.inference_wrapper.generate_baseline(sample_path, sample_dest):
+                if self.inference_wrapper.generate_baseline(sample_data, sample_dest):
                     success_count += 1
                     self.stats["samples_added"] += 1
                 
@@ -802,8 +850,11 @@ class GoldenSetCurator:
             logging.info("ℹ️ No rotation needed (not enough new samples)")
             return True
         
-        # Initialize inference wrapper
+        # Initialize inference wrapper (needed for stack_size)
         self.inference_wrapper = ModelInferenceWrapper(self.model_path)
+        
+        # Re-collect samples with correct stack_size now that wrapper is loaded
+        new_samples = self._collect_samples()
         
         # Use atomic writes: copy to temp, modify, then swap
         if self.temp_dir.exists():

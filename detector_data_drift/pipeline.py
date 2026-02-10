@@ -21,6 +21,7 @@ except ImportError:
     from . import analyzer as analyzer
 
 import all_config as config
+from detector_data_drift.smart_stacking import build_groups, IMAGE_EXTENSIONS
 
 # Define persistence paths
 EMBEDDINGS_DIR = config.BASE_DATA_DIR / "data_drift" / "embeddings"
@@ -64,25 +65,16 @@ def detect_domain(directory):
 
 def prepare_data_groups(directory, stack_size, domain):
     """
-    Retrieves file paths and chunks them into groups based on specs provided by extractor.
+    Retrieves file paths and groups them based on stack_size and folder structure.
+    Uses smart_stacking.build_groups() for structure-aware grouping.
     """
-    if domain == "IMAGE":
-        raw_paths = detector.get_recursive_image_paths(directory)
-    else:
-        raw_paths = [str(p) for p in Path(directory).rglob('*') if p.is_file()]
+    # Map domain to extension set
+    ext_map = {
+        "IMAGE": IMAGE_EXTENSIONS,
+    }
+    extensions = ext_map.get(domain, None)  # None = auto-detect
     
-    raw_paths = sorted(raw_paths)
-    
-    if stack_size <= 1:
-        return raw_paths
-        
-    grouped_data = []
-    for i in range(0, len(raw_paths), stack_size):
-        chunk = raw_paths[i:i + stack_size]
-        if len(chunk) == stack_size:
-            grouped_data.append(chunk)
-            
-    return grouped_data
+    return build_groups(directory, stack_size, extensions=extensions)
 
 def print_drift_report(score, metrics_breakdown, num_baseline, num_incoming, root_cause=None):
     """Prints a clean, formatted report to the console."""

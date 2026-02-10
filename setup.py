@@ -44,7 +44,7 @@ logging.basicConfig(
 # =============================================================================
 
 MIN_SAMPLES = 200
-GOLDEN_SET_SAMPLE_SIZE = 30
+GOLDEN_SET_SAMPLE_SIZE = 50
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
 TABULAR_EXTENSIONS = {'.csv', '.parquet', '.xlsx'}
 
@@ -296,7 +296,7 @@ def calibrate_drift_threshold(part_a: list, part_b: list, model_path: Path) -> f
         emb_b = extractor.extract_features(model_instance, groups_b, specs)
         
         # Analyze drift (returns probability 0-1)
-        drift_prob, metrics = analyzer.analyze_drift(emb_a, emb_b)
+        drift_prob, metrics, _root_cause = analyzer.analyze_drift(emb_a, emb_b)
         drift_score = drift_prob * 100
         
         # Print calibration report
@@ -426,36 +426,22 @@ def validate_directories() -> bool:
 # =============================================================================
 
 def create_golden_set(model_path: Path, training_data: list) -> bool:
-    """Create initial Golden Set from training data samples."""
+    """Create initial Golden Set from training data samples.
+    
+    Passes the training data directory directly to the curator so that
+    build_groups() can respect folder structure for stacked models.
+    """
     from services.golden_set_curator import GoldenSetCurator
     
-    # Get sample paths (handle both grouped and ungrouped)
-    if training_data and isinstance(training_data[0], tuple):
-        sample_paths = [path for _, path in training_data]
-    else:
-        sample_paths = training_data
-    
-    # Select samples for golden set
-    samples = random.sample(sample_paths, min(GOLDEN_SET_SAMPLE_SIZE, len(sample_paths)))
-    
-    # Create temp directory with selected samples
-    temp_dir = Path(tempfile.mkdtemp(prefix="golden_set_source_"))
-    try:
-        for i, path in enumerate(samples):
-            src = Path(path)
-            dst = temp_dir / f"{i:04d}{src.suffix}"
-            shutil.copy2(src, dst)
-        
-        curator = GoldenSetCurator(
-            input_dirs=[temp_dir],
-            model_path=model_path,
-            sample_size=GOLDEN_SET_SAMPLE_SIZE
-        )
-        exit_code = curator.curate()
-        return exit_code == 0
-        
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    # Pass training data directory directly — let the curator handle
+    # structure-aware grouping and random sampling internally
+    curator = GoldenSetCurator(
+        input_dirs=[config.TRAINING_DATA_PATH],
+        model_path=model_path,
+        sample_size=GOLDEN_SET_SAMPLE_SIZE
+    )
+    exit_code = curator.curate()
+    return exit_code == 0
 
 
 # =============================================================================
