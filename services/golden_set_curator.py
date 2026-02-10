@@ -411,8 +411,10 @@ class ModelInferenceWrapper:
         - .npy file for numeric arrays
         - .png if output appears to be an image
         
+        Handles both single-output (numpy array) and multi-output (list of arrays) models.
+        
         Args:
-            output: Model output to save
+            output: Model output to save (array or list of arrays)
             output_dir: Directory to save output in
             
         Returns:
@@ -421,7 +423,24 @@ class ModelInferenceWrapper:
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
             
-            # Always save raw output as .npy
+            # Normalize list outputs (multi-output models)
+            if isinstance(output, list):
+                if len(output) == 1:
+                    output = output[0]  # Single-output wrapped in list
+                else:
+                    # Multi-output: save each separately, plus combined
+                    for i, out in enumerate(output):
+                        out_arr = np.array(out) if not isinstance(out, np.ndarray) else out
+                        np.save(output_dir / f"prediction_{i}.npy", out_arr)
+                    # Also save full output as combined file
+                    np.save(output_dir / "prediction.npy", np.array(output, dtype=object))
+                    return True
+            
+            # Ensure numpy array
+            if not isinstance(output, np.ndarray):
+                output = np.array(output)
+            
+            # Save raw output as .npy
             npy_path = output_dir / "prediction.npy"
             np.save(npy_path, output)
             
