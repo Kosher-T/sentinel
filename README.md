@@ -1,194 +1,137 @@
-# Sentinel: Automated Model Monitoring & Self-Healing Pipeline
+# 🛡️ Sentinel: Automated Model Drift Detection & Retraining System
 
-## Table of Contents
+**Sentinel** is an advanced machine learning monitoring system designed to detect data drift, automate model retraining, and ensure model performance in production environments without manual intervention.
 
-- [The Architecture](#the-architecture)
-- [Project Status: The Simulation](#project-status-the-simulation)
-- [The Self-Healing Loop (How it Works)](#the-self-healing-loop-how-it-works)
-- [Tech Stack & Design Patterns](#tech-stack--design-patterns)
-- [The Workflow](#the-workflow)
-  - [1. The "Saboteur" (Data Simulation)](#1-the-saboteur-data-simulation)
-  - [2. The "Endpoint" (Modular Monitoring)](#2-the-endpoint-modular-monitoring)
-  - [3. The "Red Phone" (Automated Retraining)](#3-the-red-phone-automated-retraining)
-- [How to Run This Project](#how-to-run-this-project)
-  - [1. Build the Monitor](#1-build-the-monitor)
-  - [2. Run the Saboteur (Create Bad Data)](#2-run-the-saboteur-create-bad-data)
-  - [3. Run the QC Check Manually](#3-run-the-qc-check-manually)
-- [Future Roadmap (Scaling to Production)](#future-roadmap-scaling-to-production)
-  - [Immediate Refinements (Next 2 Weeks - Local Development Focus)](#immediate-refinements-next-2-weeks---local-development-focus)
-  - [Deep Learning & MLOps Expansions](#deep-learning--mlops-expansions)
-  - [Infrastructure & Cloud Migration](#infrastructure--cloud-migration-delayed)
-
-## The Architecture
-*"Models degrade. Good systems heal themselves."*
-
-This project implements an **end-to-end MLOps Drift Detection System** for a Video Frame Interpolation (VFI) model. Instead of manually checking for performance decay (**fondly named "wobbly chairs"**) or data quality issues (**"softwood"**), this system automates the entire **Quality Control loop** using **Containerized Microservices** and **Automated Orchestration**.
+It acts as a "self-healing" loop for your ML pipeline:
+1.  **Monitors** incoming production data for distribution shifts (Drift).
+2.  **Analyzes** drift severity using deep feature extraction (VGG16 backbone).
+3.  **Triggers** retraining when drift exceeds critical thresholds (Consecutive failures or high failure rate).
+4.  **Validates** the new model against a "Golden Set" to prevent performance decay.
+5.  **Deploys** the new model automatically if it passes all checks.
 
 ---
 
-## Project Status: The Simulation
-To test this system properly, I am currently running it in a controlled, **simulated environment**. This allows me to prove that the "safety net" works before trusting it with a live model.
+## 🚀 Key Features
 
-| Component | Status | Notes |
-| :--- | :--- | :--- |
-| **The Model** | 🔹 **Simulated** | My actual VFI model is currently still in training. For now, I am using a "mock" (a stand-in) to ensure the monitoring system triggers correctly, regardless of the specific model inside. |
-| **Data Source** | 🔹 **Synthetic** | I created specific test data to "force" the system to react. By feeding it intentionally perfect or intentionally bad data, I can guarantee that the system correctly spots the difference between a **PASS** and a **FAIL**. |
-| **Scalability** | 🔹 **Modular Design** | Currently, this detects drift in **Video** inputs. However, the system is built like building blocks. In the future, I can easily "snap in" new blocks for Audio or Text models without breaking the existing structure. |
-
----
-
-## The Self-Healing Loop (How it Works)
-
-```mermaid
-flowchart TD
-    subgraph INITIALIZATION["🚀 Initialization"]
-        A[sentinel_watch.py] --> B[SentinelWatch.watch]
-        B --> C[Simulate Cloud Connection]
-    end
-
-    subgraph DRIFT["📊 Step 1: Data Drift Detection"]
-        C --> D[Run Drift Check]
-        D --> E[detector_data_drift/pipeline.py]
-        E --> F[Detect Domain]
-        F --> G[Extract Embeddings]
-        G --> H[Run Analyzer]
-        H --> I{Drift Detected?}
-    end
-
-    subgraph ARCHIVE["📁 Data Archival"]
-        I -->|Yes/No| J[Archive Incoming Data]
-        J --> K[Record Drift Result to SQLite]
-        K --> L{Check Drift History<br/>Threshold Met?}
-    end
-
-    subgraph PASS_PATH["✅ No Action Required"]
-        I -->|PASS| M[Log OK Status]
-        L -->|No| N[Log - Waiting for Threshold]
-    end
-
-    subgraph RETRAIN["⚙️ Step 2: Trigger Retraining"]
-        L -->|Yes| O[Send Retraining Alert]
-        O --> P[ExecutionEngine]
-        P --> Q[LocalDriver.start]
-        Q --> R[Run Training Script]
-        R --> S{Training<br/>Successful?}
-        S -->|No| T[Send Critical Alert]
-        S -->|Yes| U[Log Metrics]
-    end
-
-    subgraph DECAY["🔍 Step 3: Decay Check / Gatekeeper"]
-        U --> V[Run Decay Pipeline]
-        V --> W[detector_model_decay/pipeline.py]
-        W --> X[Load Challenger Model]
-        X --> Y[Run VFI Inference on Golden Set]
-        Y --> Z[Extract Embeddings]
-        Z --> AA[Compare with Production Model]
-        AA --> AB{Decay Check<br/>Passed?}
-    end
-
-    subgraph DEPLOY["🚀 Deployment"]
-        AB -->|Yes| AC[Simulate Deployment]
-        AC --> AD[Send Deployment Alert]
-        AD --> AE[Update Baselines]
-        AE --> AF[GoldenSetCurator]
-        AF --> AG[DataRotator]
-        AG --> AH[Purge Drift History]
-        AH --> AI[✅ Self-Healing Complete]
-    end
-
-    subgraph ABORT["❌ Deployment Aborted"]
-        AB -->|No| AJ[Send Decay Fail Alert]
-        AJ --> AK[❌ Deployment Blocked]
-    end
-
-    subgraph SERVICES["🔧 Background Services"]
-        direction LR
-        SVC1[Distiller<br/>distiller.py] --> SVC2[Creates Latent-Space<br/>Models for Drift Detection]
-        SVC3[SentinelAlert<br/>alert_utils.py] --> SVC4[Email + System<br/>Notifications]
-    end
-
-    style INITIALIZATION fill:#1a1a2e,stroke:#00E5FF,color:#fff
-    style DRIFT fill:#16213e,stroke:#0F3460,color:#fff
-    style ARCHIVE fill:#1a1a2e,stroke:#E94560,color:#fff
-    style PASS_PATH fill:#0d3320,stroke:#00ff88,color:#fff
-    style RETRAIN fill:#3d1a1a,stroke:#ff6b6b,color:#fff
-    style DECAY fill:#1a2a3d,stroke:#4ecdc4,color:#fff
-    style DEPLOY fill:#1a3d1a,stroke:#95e88a,color:#fff
-    style ABORT fill:#3d1a1a,stroke:#ff4757,color:#fff
-    style SERVICES fill:#2d2d44,stroke:#9b59b6,color:#fff
-```
-
-## Tech Stack & Design Patterns
-
-| Component | Tech | Role (The Factory Analogy) |
-| :--- | :--- | :--- |
-| **Drift Detection** | **Keras / PyTorch / ONNX** | The QC Sensor: Uses model-agnostic transfer learning to extract feature **embeddings** from video frames (The "Touch Test"). |
-| **Statistical Analysis** | **Ensemble Metrics** | The Judge: Uses a weighted vote of **Cosine Similarity (90%)**, Wasserstein Distance, KL-Divergence, and MMD to robustly detect drift. |
-| **Infrastructure** | **Docker** | The QC Booth: A portable, isolated environment that ensures the monitor runs identically on any machine. |
-| **Orchestration** | **Execution Engine** | The Manager: Automates the schedule, triggers `LocalDriver` or distributed jobs, and handles the "**Red Phone**" logic. |
+*   **Intelligent Drift Detection**: Uses a frozen feature extractor (e.g., VGG16) to compute the Wasserstein distance between training data and incoming production data.
+*   **Smart Trigger Logic**: automated retraining initiates upon **3 consecutive drift failures** or an **80% failure rate** in the recent window.
+*   **Automated Retraining Pipeline**: Seamlessly hands off drifted data to an execution engine (Local/AWS/GCP) to train a challenger model.
+*   **Model Decay Gatekeeper**: A "Golden Set" of curvated samples ensures the new model performs better (or at least as good) as the old one before deployment.
+*   **Smart Distillation**: Automatically creates lightweight "latent-space" versions of your models for ultra-fast, CPU-friendly drift checking.
+*   **Real-time Dashboard**: A comprehensive Streamlit dashboard to visualize system state, drift history, and model performance.
+*   **Audit Logging**: Full traceability of every decision, alert, and deployment in a SQLite-backed audit log.
 
 ---
 
-## The Workflow
+## 📦 Installation
 
-### 1. The "Saboteur" (Data Simulation)
-To prove the system works, I built a `data_saboteur.py` script that synthetically generates **"drifted" data** (noise, blur, low-light) to simulate real-world camera failures.
+1.  **Clone the repository**:
+    ```bash
+    git clone https://github.com/yourusername/sentinel.git
+    cd sentinel
+    ```
 
-### 2. The "Endpoint" (Modular Monitoring)
-The monitoring logic is decoupled from the orchestration.
+2.  **Create a virtual environment**:
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate
+    ```
 
-* It runs as a **stateless Docker Container**.
-* It accepts a volume of data and a baseline reference.
-* It outputs a strictly typed status (`PASS`/`FAIL`) and a **Drift Score**.
-
-> **Why this matters:** This architecture is **model-agnostic**. I can swap the internal logic for an NLP monitor, and the infrastructure remains unchanged.
-
-### 3. The "Red Phone" (Automated Retraining)
-When drift is detected (threshold exceeded), the system doesn't just alert—it acts. The primary workflow automatically triggers a secondary **Retraining Pipeline** via the `ExecutionEngine`. This simulates a **continuous training (CT) loop**, dispatching training jobs (locally or to specific hardware) to fix the issue.
+3.  **Install dependencies**:
+    ```bash
+    pip install -r requirements.txt
+    ```
 
 ---
 
-## How to Run This Project
+## ⚙️ Setup Wizard
 
-**Prerequisites:**
+Sentinel includes an interactive setup wizard to configure the system for your specific environment and data.
 
-* Docker installed
-* Python 3.9+
-
-### 1. Build the Monitor:
+Run the setup script:
 ```bash
-docker build -t vfi-monitor .
+python setup.py
 ```
 
-### 2. Run the Saboteur (Create Bad Data):
+The wizard will guide you through:
+*   **Validating Directories**: ensuring all data and model paths exist.
+*   **Drift Calibration**: analyzing your training data to suggest an optimal drift threshold.
+*   **Golden Set Creation**: curating a representative set of samples for the gatekeeper check.
+*   **Platform Configuration**: choosing between Local, AWS, or GCP for training jobs.
+
+Configuration is saved to `all_config.py`.
+
+---
+
+## 🖥️ Usage
+
+### 1. Start the Sentinel Watcher
+The watcher is the core daemon that runs on a schedule (defined in config) to monitor data and orchestrate the pipeline.
+
 ```bash
-python data_tools/data_saboteur.py
+python sentinel_watch.py
 ```
 
-### 3. Run the QC Check Manually:
+*   **Drift Check**: Compares incoming data in `data/data_drift/incoming_data` against the baseline.
+*   **Retraining**: If triggered, uses `services/execution_engine.py` to train a new model.
+*   **Deployment**: If the new model passes the decay check, it replaces the production model in `models/production`.
+
+### 2. Launch the Dashboard
+Monitor the system state, view drift charts, and inspect audit logs.
+
 ```bash
-docker run \
-  -v $(pwd)/data/drifted_frames:/app/incoming_data \
-  -v $(pwd)/temp_status:/app/status_output \
-  vfi-monitor
+streamlit run dashboard.py
+```
+Access the dashboard at `http://localhost:8501`.
+
+---
+
+## 🔧 Configuration
+
+The primary configuration file is `all_config.py`. Key settings include:
+
+*   **`DRIFT_THRESHOLD`**: The Wasserstein distance percentage that indicates significant drift (calibrated during setup).
+*   **`RETRAIN_TRIGGER_COUNT`**: Number of consecutive failures to trigger retraining (Default: **3**).
+*   **`DRIFT_FAILURE_RATIO`**: Ratio of failures in the recent window to trigger retraining (Default: **0.8** / 80%).
+*   **`DECAY_THRESHOLD`**: Max allowed performance drop (%) on the Golden Set for a new model (Default: **5.0%**).
+*   **`MONITOR_SCHEDULE`**: CRON expression for how often the watcher runs.
+
+---
+
+## 📂 Directory Structure
+
+```plaintext
+sentinel/
+├── sentinel_watch.py       # Main monitoring service
+├── setup.py                # Interactive setup wizard
+├── dashboard.py            # Streamlit dashboard
+├── all_config.py           # Central configuration
+├── data/
+│   ├── data_drift/         # Incoming production data & history
+│   ├── golden_set/         # Curated samples for decay checking
+│   └── model_decay/        # Logs and history for model performance
+├── models/
+│   ├── production/         # Active model serving production
+│   └── challenger/         # Newly trained models awaiting validation
+├── services/               # Core services
+│   ├── execution_engine.py # Manages training jobs
+│   ├── distiller.py        # Creates latent-space models
+│   └── system_state_tracker.py # Tracks global system health
+└── tests/                  # Unit tests
 ```
 
-### Future Roadmap (Scaling to Production)
+---
 
-#### Immediate Refinements (Next 2 Weeks - Local Development Focus)
+## 🤝 Contributing
 
-These steps are designed to be completed fully offline to optimize resources:
+1.  Fork the repository.
+2.  Create a feature branch (`git checkout -b feature/amazing-feature`).
+3.  Commit your changes (`git commit -m 'Add amazing feature'`).
+4.  Push to the branch (`git push origin feature/amazing-feature`).
+5.  Open a Pull Request.
 
-* **✅ Visualization Dashboard:** `dashboard.py` is now live! It connects the **Drift Score** output to a **Streamlit** dashboard, providing a real-time "Pulse Check" of the system.
-* ~~**Decoupling:** Complete the implementation of external configuration management (e.g., Environment Variables, K8s ConfigMaps) to remove all hardcoded parameters.~~
+---
 
-#### Deep Learning & MLOps Expansions
+## 📄 License
 
-* **✅ Model Drift (Concept Drift):** The system now includes `detector_model_decay` to detect **Model Decay**. It creates a feedback loop to compare predictions against ground truth labels (Golden Set).
-* **Horizontal Scaling (Model Agnosticism):** Once the VFI pipeline is perfected, I will generalize the architecture. The aim is for a modular monitoring approach that can easily monitor models pulled directly from **Hugging Face** or **Kaggle** using the same Sentinel container.
-* **A/B Testing:** Implement a **Canary Deployment** strategy, allowing the "Champion" model and the "Challenger" model to run side-by-side on live data to compare performance safely.
-
-#### Infrastructure & Cloud Migration (Delayed)
-
-* **Cloud Deployment:** Deploy the VFI Model and the Sentinel Monitor to **Google Cloud Platform (GCP)**.
-* **Orchestrator Upgrade:** Migrate the orchestration layer from GitHub Actions to **Kubernetes (K8s)** to demonstrate production scaling, service management, and high availability.
+Distributed under the MIT License. See `LICENSE` for more information.
