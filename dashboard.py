@@ -1,5 +1,6 @@
 import streamlit as st
 import sqlite3
+import json
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -187,44 +188,62 @@ def render_drift_chart(df):
     st.plotly_chart(fig, width='stretch')
 
 def render_root_cause():
-    """Renders drift root cause breakdown from the latest audit log FAIL entry."""
-    if not AUDIT_AVAILABLE:
-        return
+    """Renders drift root cause breakdown from the drift_logs DB or audit log."""
+    # Try to load root cause from the drift_logs DB first
+    root_cause = None
+    source_timestamp = None
     
-    audit = SentinelAuditLog()
-    # Get the latest drift FAIL entry that has root cause data
-    fail_entries = audit.query(category="drift", action="check_fail", limit=1)
+    conn = get_db_connection()
+    if conn:
+        try:
+            c = conn.cursor()
+            c.execute("SELECT root_cause_json, timestamp FROM drift_logs WHERE status='FAIL' AND root_cause_json IS NOT NULL ORDER BY timestamp DESC LIMIT 1")
+            row = c.fetchone()
+            if row and row[0]:
+                root_cause = json.loads(row[0])
+                source_timestamp = row[1]
+            conn.close()
+        except Exception:
+            if conn:
+                conn.close()
     
-    if not fail_entries:
-        return
+    # Fallback to audit log if DB doesn't have root cause data
+    if not root_cause and AUDIT_AVAILABLE:
+        audit = SentinelAuditLog()
+        fail_entries = audit.query(category="drift", action="check_fail", limit=1)
+        if fail_entries:
+            entry = fail_entries[0]
+            details = entry.get("details", {})
+            if details and "primary_drivers" in details:
+                root_cause = details
+                source_timestamp = entry.get("timestamp", "N/A")
     
-    entry = fail_entries[0]
-    details = entry.get("details", {})
-    
-    if not details or "primary_drivers" not in details:
+    if not root_cause or "primary_drivers" not in root_cause:
         return
     
     st.subheader("🔍 Drift Root Cause Analysis")
     
     # Pattern indicator
-    pattern = details.get("drift_pattern", "unknown")
-    drifting = details.get("drifting_components", 0)
+    pattern = root_cause.get("drift_pattern", "unknown")
+    drifting = root_cause.get("drifting_components", 0)
+    total = root_cause.get("total_components", 0)
     pattern_config = {
-        "localized": {"icon": "🎯", "color": "#F59E0B", "desc": "Drift concentrated in few features"},
-        "moderate": {"icon": "🔶", "color": "#F97316", "desc": "Drift spread across several features"},
-        "widespread": {"icon": "🌊", "color": "#EF4444", "desc": "Drift affecting most features"},
+        "localized": {"icon": "🎯", "color": "#F59E0B", "desc": "Drift concentrated in few features — likely a specific data subset changed"},
+        "moderate": {"icon": "🔶", "color": "#F97316", "desc": "Drift across several features — possibly a gradual distribution shift"},
+        "widespread": {"icon": "🌊", "color": "#EF4444", "desc": "Most features drifting — significant change in data characteristics"},
     }
     p = pattern_config.get(pattern, {"icon": "❓", "color": "#6B7280", "desc": "Unknown"})
     
     col_pattern, col_info = st.columns([1, 2])
     with col_pattern:
-        st.metric(label="Drift Pattern", value=f"{p['icon']} {pattern.upper()}", delta=f"{drifting} components drifting", delta_color="off")
+        st.metric(label="Drift Pattern", value=f"{p['icon']} {pattern.upper()}", delta=f"{drifting}/{total} components drifting", delta_color="off")
     with col_info:
         st.caption(p["desc"])
-        st.caption(f"From: {entry.get('timestamp', 'N/A')}")
+        if source_timestamp:
+            st.caption(f"From: {source_timestamp}")
     
     # Bar chart of primary drivers
-    drivers = details.get("primary_drivers", [])
+    drivers = root_cause.get("primary_drivers", [])
     if drivers:
         components = [f"Component {d['component']}" for d in drivers]
         scores = [d["drift_score"] for d in drivers]
@@ -248,6 +267,133 @@ def render_root_cause():
             yaxis=dict(autorange="reversed"),
         )
         st.plotly_chart(fig, use_container_width=True)
+    
+    # Detailed component metrics table
+    per_component = root_cause.get("per_component", [])
+    if per_component:
+        st.markdown("**Component Diagnostic Detail**")
+        
+        table_data = []
+        for c in per_component:
+            ks_p = c.get('ks_pvalue', None)
+            sig = "✅ Yes" if (ks_p is not None and ks_p < 0.05) else "—"
+            
+            table_data.append({
+                "Component": f"PC-{c['component']}",
+                "Drift Score": round(c.get('drift_score', 0), 4),
+                "Variance %": f"{c.get('explained_variance', 0):.1%}",
+                "Wasserstein": round(c.get('wasserstein', 0), 4),
+                "KL Div": round(c.get('kl_divergence', 0), 4),
+                "Mean Shift": round(c.get('mean_shift', 0), 4),
+                "Var Ratio": round(c.get('variance_ratio', 1), 4),
+                "Skew Δ": round(c.get('skewness_delta', 0), 4),
+                "KS Stat": round(c.get('ks_statistic', 0), 4),
+                "KS Sig?": sig,
+            })
+        
+        df_detail = pd.DataFrame(table_data)
+        st.dataframe(df_detail, use_container_width=True, hide_index=True)
+
+
+def render_root_cause_trends():
+    """Renders historical root cause trends — which components repeatedly drive drift."""
+    conn = get_db_connection()
+    if not conn:
+        return
+    
+    try:
+        c = conn.cursor()
+        c.execute("SELECT timestamp, root_cause_json FROM drift_logs WHERE status='FAIL' AND root_cause_json IS NOT NULL ORDER BY timestamp DESC LIMIT 20")
+        rows = c.fetchall()
+        conn.close()
+    except Exception:
+        if conn:
+            conn.close()
+        return
+    
+    if len(rows) < 2:
+        return  # Need at least 2 FAIL entries to show trends
+    
+    st.subheader("📊 Root Cause Trends")
+    st.caption("Which PCA components are repeatedly driving drift across recent failures")
+    
+    # Build heatmap data: timestamps × components
+    heatmap_data = []  # {timestamp, component, drift_score}
+    driver_counts = {}  # component -> count of times in top 3
+    
+    for timestamp, rc_json in rows:
+        try:
+            rc = json.loads(rc_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        
+        per_component = rc.get("per_component", [])
+        primary_drivers = rc.get("primary_drivers", [])
+        
+        # Track top driver appearances
+        for d in primary_drivers:
+            comp = d.get("component", 0)
+            driver_counts[comp] = driver_counts.get(comp, 0) + 1
+        
+        # Build heatmap row
+        for comp in per_component:
+            heatmap_data.append({
+                "Check": timestamp[:16],  # Trim to minutes
+                "Component": f"PC-{comp['component']}",
+                "Drift Score": comp.get("drift_score", 0),
+            })
+    
+    if not heatmap_data:
+        return
+    
+    # --- Heatmap ---
+    df_heat = pd.DataFrame(heatmap_data)
+    
+    fig = go.Figure(data=go.Heatmap(
+        x=df_heat["Check"].unique(),
+        y=sorted(df_heat["Component"].unique()),
+        z=df_heat.pivot_table(index="Component", columns="Check", values="Drift Score", aggfunc="first").reindex(
+            index=sorted(df_heat["Component"].unique())
+        ).values,
+        colorscale=[
+            [0, "#1e293b"],     # Dark slate — no drift
+            [0.2, "#22C55E"],   # Green — low
+            [0.5, "#F59E0B"],   # Amber — moderate
+            [1.0, "#EF4444"],   # Red — high
+        ],
+        text=df_heat.pivot_table(index="Component", columns="Check", values="Drift Score", aggfunc="first").reindex(
+            index=sorted(df_heat["Component"].unique())
+        ).round(3).values,
+        texttemplate="%{text}",
+        hovertemplate="%{y} at %{x}: %{z:.4f}<extra></extra>",
+    ))
+    fig.update_layout(
+        title="Component Drift Scores Across Recent Failures",
+        xaxis_title="Drift Check",
+        yaxis_title="",
+        margin=dict(l=0, r=0, t=40, b=0),
+        height=max(200, len(df_heat["Component"].unique()) * 35 + 80),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # --- Repeat Offenders ---
+    if driver_counts:
+        st.markdown("**🔄 Repeat Offenders** — Components most frequently in the top 3 drivers")
+        sorted_drivers = sorted(driver_counts.items(), key=lambda x: x[1], reverse=True)
+        total_checks = len(rows)
+        
+        offender_data = []
+        for comp, count in sorted_drivers:
+            pct = (count / total_checks) * 100
+            offender_data.append({
+                "Component": f"PC-{comp}",
+                "Appearances": f"{count}/{total_checks}",
+                "Frequency": f"{pct:.0f}%",
+                "Severity": "🔴 Persistent" if pct >= 75 else "🟡 Recurring" if pct >= 40 else "🟢 Occasional",
+            })
+        
+        df_offenders = pd.DataFrame(offender_data)
+        st.dataframe(df_offenders, use_container_width=True, hide_index=True)
 
 def render_history_table(df):
     """Renders the detailed history table with visual enhancements."""
@@ -563,6 +709,7 @@ def main():
     render_metrics(df)
     render_drift_chart(df)
     render_root_cause()
+    render_root_cause_trends()
     render_history_table(df)
     render_audit_log()
 

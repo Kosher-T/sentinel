@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 import sqlite3
 import shutil
 import time
@@ -55,11 +56,13 @@ class SentinelWatch:
         c.execute('''CREATE TABLE IF NOT EXISTS drift_logs
                      (timestamp TEXT, drift_score REAL, status TEXT, threshold REAL, data_path TEXT)''')
         
-        # Migration check for data_path
+        # Migration checks
         c.execute("PRAGMA table_info(drift_logs)")
         columns = [column[1] for column in c.fetchall()]
         if 'data_path' not in columns:
             c.execute("ALTER TABLE drift_logs ADD COLUMN data_path TEXT")
+        if 'root_cause_json' not in columns:
+            c.execute("ALTER TABLE drift_logs ADD COLUMN root_cause_json TEXT")
             
         conn.commit()
         conn.close()
@@ -249,12 +252,13 @@ class SentinelWatch:
         logging.error(f"🔴 Timeout: Distiller did not produce {distilled_name} in time.")
         return None
 
-    def record_drift_result(self, score, status, folder_path=None):
+    def record_drift_result(self, score, status, folder_path=None, root_cause=None):
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        c.execute("INSERT INTO drift_logs (timestamp, drift_score, status, threshold, data_path) VALUES (?, ?, ?, ?, ?)",
-                  (timestamp, score, status, config.DRIFT_THRESHOLD, folder_path))
+        rc_json = json.dumps(root_cause) if root_cause else None
+        c.execute("INSERT INTO drift_logs (timestamp, drift_score, status, threshold, data_path, root_cause_json) VALUES (?, ?, ?, ?, ?, ?)",
+                  (timestamp, score, status, config.DRIFT_THRESHOLD, folder_path, rc_json))
         conn.commit()
         conn.close()
 
@@ -315,15 +319,15 @@ class SentinelWatch:
         
         if drift_score is None: return
 
-        # Audit the drift check result
+        # Audit the drift check result (enriched with full per-component breakdown)
         drift_details = {"score": round(drift_score, 2), "threshold": config.DRIFT_THRESHOLD}
         if root_cause and status != "PASS":
             drift_details["drift_pattern"] = root_cause.get("drift_pattern", "unknown")
             drift_details["drifting_components"] = root_cause.get("drifting_components", 0)
-            drift_details["primary_drivers"] = [
-                {"component": d["component"], "drift_score": d["drift_score"]}
-                for d in root_cause.get("primary_drivers", [])
-            ]
+            drift_details["total_components"] = root_cause.get("total_components", 0)
+            # Full per-component data for rich dashboard display
+            drift_details["primary_drivers"] = root_cause.get("primary_drivers", [])
+            drift_details["per_component"] = root_cause.get("per_component", [])
         self.audit.log(
             "drift", f"check_{status.lower()}",
             drift_details,
@@ -333,12 +337,12 @@ class SentinelWatch:
         # 1. Handle data based on drift status
         if status == "PASS":
             # PASS: Record to DB only, discard the incoming data (no archive needed)
-            self.record_drift_result(drift_score, status, None)
+            self.record_drift_result(drift_score, status, None, root_cause)
             self.discard_incoming_data()
         else:
             # FAIL: Archive the data and record to DB
             archived_path = self.archive_incoming_data(drift_score, status)
-            self.record_drift_result(drift_score, status, archived_path)
+            self.record_drift_result(drift_score, status, archived_path, root_cause)
         
         # 2. Check triggers
         is_triggered, fails, total = self.check_drift_history()

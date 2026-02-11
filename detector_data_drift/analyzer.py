@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.stats import wasserstein_distance, entropy
+from scipy.stats import wasserstein_distance, entropy, ks_2samp, skew
 from sklearn.decomposition import PCA
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -100,6 +100,18 @@ def analyze_drift(baseline, current):
         # Weight by how much variance this component explains
         contribution = float(component_drift * explained_variance[i])
         
+        # --- Diagnostic Metrics (do NOT affect aggregate drift score) ---
+        # Mean Shift: signed directional change in component mean
+        mean_shift = float(np.mean(c_pca[:, i]) - np.mean(b_pca[:, i]))
+        # Variance Ratio: >1 means spreading out, <1 means compressing
+        b_var = np.var(b_pca[:, i])
+        c_var = np.var(c_pca[:, i])
+        variance_ratio = float(c_var / b_var) if b_var > 1e-10 else 1.0
+        # Skewness Delta: change in distribution shape/asymmetry
+        skewness_delta = float(skew(c_pca[:, i]) - skew(b_pca[:, i]))
+        # KS Test: formal statistical test for distribution difference
+        ks_stat, ks_p = ks_2samp(b_pca[:, i], c_pca[:, i])
+        
         per_component.append({
             "component": i + 1,
             "wasserstein": round(float(per_component_wd[i]), 4),
@@ -107,6 +119,12 @@ def analyze_drift(baseline, current):
             "explained_variance": round(float(explained_variance[i]), 4),
             "drift_score": round(float(component_drift), 4),
             "contribution": round(contribution, 6),
+            # Diagnostic fields
+            "mean_shift": round(mean_shift, 4),
+            "variance_ratio": round(variance_ratio, 4),
+            "skewness_delta": round(skewness_delta, 4),
+            "ks_statistic": round(float(ks_stat), 4),
+            "ks_pvalue": round(float(ks_p), 6),
         })
     
     # Sort by contribution (highest first)
