@@ -272,7 +272,19 @@ class SentinelWatch:
         statuses = [r[0] for r in rows]
         total = len(statuses)
         fails = statuses.count("FAIL")
-        is_triggered = ((fails == total) and (total == config.TIMEFRAME_WINDOW)) or ((fails / total) >= config.DRIFT_FAILURE_RATIO)
+        
+        # Check for consecutive failures
+        consecutive_fails = 0
+        for status in statuses:
+            if status == "FAIL":
+                consecutive_fails += 1
+            else:
+                break
+        
+        is_consecutive = consecutive_fails >= config.RETRAIN_TRIGGER_COUNT
+        is_ratio = (total > 0) and ((fails / total) >= config.DRIFT_FAILURE_RATIO)
+        
+        is_triggered = is_consecutive or is_ratio
         return is_triggered, fails, total
 
     def run_decay_pipeline(self, challenger_model_path):

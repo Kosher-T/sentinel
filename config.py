@@ -48,8 +48,8 @@ DRIFT_THRESHOLD = 26.4  # % distance limit for incoming production data
 
 # --- CONTINUOUS MONITORING SETTINGS ---
 MONITOR_SCHEDULE = "0 */6 * * *" # Cron: Every 6 hours
-RETRAIN_TRIGGER_COUNT = 5        # Consecutive fails required to trigger an automated retrain
-DRIFT_FAILURE_RATIO = 0.6        # 60% failure in recent window triggers system alert
+RETRAIN_TRIGGER_COUNT = 3        # Consecutive fails required to trigger an automated retrain
+DRIFT_FAILURE_RATIO = 0.8        # 80% failure in recent window triggers system alert
 TIMEFRAME_WINDOW = 5             # Number of past timeframes to consider for the failure ratio
 
 # --- EXECUTION ENGINE SETTINGS ---
