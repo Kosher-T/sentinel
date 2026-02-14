@@ -1,0 +1,32 @@
+services:
+  sentinel-watch:
+    # Use the Dockerfile which we will ensure uses Python 3.12
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      # MUNCHKIN: Mount your WSL venv directly into the container.
+      # Verified: Using python3.12 to match your WSL venv exactly.
+      - ./venv/lib/python3.12/site-packages:/usr/local/lib/python3.12/site-packages
+    environment:
+      - PYTHONPATH=/app:/usr/local/lib/python3.12/site-packages
+      - CUDA_VISIBLE_DEVICES=-1
+    # Changed to 'python -u' to ensure it finds the modules in the mounted site-packages
+    command: /bin/sh -c "while true; do python -u sentinel_watch.py; sleep 180; done"
+
+  dashboard:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/app
+      - ./venv/lib/python3.12/site-packages:/usr/local/lib/python3.12/site-packages
+    environment:
+      - PYTHONPATH=/app:/usr/local/lib/python3.12/site-packages
+    # MUNCHKIN FIX: Use 'python -m streamlit' and disable security checks for Docker
+    # This fixes the 'infinite loading' issue by allowing cross-origin requests from the host.
+    command: >
+      python -m streamlit run dashboard.py
