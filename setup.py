@@ -459,6 +459,8 @@ def run_setup() -> int:
     # --- Step 2: Get training data path ---
     print("\n📂 TRAINING DATA")
     print("-" * 40)
+    print("   Local paths:    data/data_drift/training_data")
+    print("   External data:  /host-data/<path-on-host>")
     training_data_path = prompt(
         "Enter path to training data (folder or CSV)",
         validator=validate_path_exists
@@ -507,6 +509,8 @@ def run_setup() -> int:
     # --- Step 3: Get model path ---
     print("\n🧠 PRODUCTION MODEL")
     print("-" * 40)
+    print("   Local models:   models/production/<model>.keras")
+    print("   External model: /host-data/<path-on-host>")
     model_path_str = prompt(
         "Enter path to production model",
         validator=validate_model_path
@@ -680,15 +684,29 @@ def run_setup() -> int:
         print("⚠️ Distillation failed but setup will continue.")
         print("   You can run distillation manually: python services/smart_distill_cli.py")
     
+    # --- Create initialization marker ---
+    marker_file = project_root / "data" / ".sentinel_initialized"
+    try:
+        from datetime import datetime
+        marker_file.write_text(
+            f"initialized_at={datetime.now().isoformat()}\n"
+            f"drift_threshold={drift_threshold}\n"
+            f"decay_threshold={decay_threshold}\n"
+        )
+        logging.info(f"✅ Marker created: {marker_file}")
+    except Exception as e:
+        logging.warning(f"⚠️ Could not create marker file: {e}")
+
     # --- Complete! ---
     print("\n" + "=" * 60)
     print("✅ SENTINEL SETUP COMPLETE!")
     print("=" * 60)
     print("\nConfiguration saved to: all_config.py")
-    print("\n🚀 Orchestrator started (simulated)")
-    print(f"   Schedule: {monitor_schedule}")
-    print("\n📊 Dashboard available at http://localhost:8501 (simulated)")
+    print("\n🚀 Restart the container to begin monitoring:")
+    print("   docker compose down && docker compose up")
+    print("\n📊 Dashboard will be available at http://localhost:8501")
     print("=" * 60 + "\n")
+
     
     return 0
 

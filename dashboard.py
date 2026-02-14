@@ -683,7 +683,66 @@ def render_audit_log():
 
 # --- MAIN APP LOGIC ---
 
+def render_setup_required():
+    """Renders a 'Setup Required' page for first-time users."""
+    st.title("🛡️ Welcome to Sentinel")
+    st.markdown("---")
+    
+    st.markdown("""
+    ## 🆕 Initial Setup Required
+    
+    Sentinel needs to be configured before it can start monitoring.
+    The setup wizard will:
+    
+    - 📂 **Load your training data** and validate it
+    - 🧠 **Register your production model**
+    - ⚖️ **Calibrate drift thresholds** from your data
+    - 🎯 **Create or link a Golden Set** for benchmarking
+    - 🧪 **Distill your model** for efficient feature extraction
+    """)
+    
+    st.markdown("---")
+    
+    st.markdown("""
+    ### How to Run Setup
+    
+    Open a terminal and run:
+    """)
+    
+    st.code("docker compose exec sentinel python setup.py", language="bash")
+    
+    st.markdown("""
+    > **Tip:** If the container isn't running yet, use `docker compose run --rm sentinel python setup.py` instead.
+    
+    ### Accessing External Data
+    
+    Files from your host machine are mounted at **`/host-data/`** inside the container.
+    Configure which directory to mount by editing `.env`:
+    """)
+    
+    st.code("HOST_DATA_DIR=/home/your-username  # or /home/ec2-user on AWS", language="bash")
+    
+    st.markdown("""
+    For example, if your training data is at `/home/user/datasets/training/`, 
+    you'd enter `/host-data/datasets/training/` when prompted during setup.
+    
+    Once setup completes, **restart the container** and this page will be replaced by the monitoring dashboard:
+    """)
+
+    
+    st.code("docker compose down && docker compose up", language="bash")
+    
+    st.markdown("---")
+    st.caption("Sentinel will check for the initialization marker at `data/.sentinel_initialized`")
+
+
 def main():
+    # First-run detection
+    marker_file = Path("data/.sentinel_initialized")
+    if not marker_file.exists():
+        render_setup_required()
+        return
+    
     limit, auto_refresh, rebase_clicked = render_sidebar()
     
     # Handle rebase button click
@@ -717,6 +776,7 @@ def main():
     if auto_refresh:
         time.sleep(5)
         st.rerun()
+
 
 if __name__ == "__main__":
     main()

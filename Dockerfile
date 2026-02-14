@@ -11,4 +11,12 @@ RUN apt-get update && apt-get install -y --fix-missing --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-# No COPY or RUN pip install commands needed
+
+# Copy entrypoint
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Expose Streamlit port
+EXPOSE 8501
+
+ENTRYPOINT ["/entrypoint.sh"]

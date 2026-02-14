@@ -4,10 +4,13 @@ services:
     volumes:
       - .:/app
       - ./venv:/app/venv
+      - ${HOST_DATA_DIR:-.}:/host-data:ro
     environment:
       - VIRTUAL_ENV=/app/venv
       - PATH=/app/venv/bin:$PATH
       - PYTHONPATH=/app:/app/venv/lib/python3.12/site-packages
+    ports:
+      - "8501:8501"
     # GPU support disabled due to missing host runtime
     # Uncomment deploy section if NVIDIA Container Toolkit is installed
     # deploy:
@@ -18,3 +21,4 @@ services:
     #           count: 1
     #           capabilities: [gpu]
     tty: true
+    stdin_open: true
