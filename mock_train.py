@@ -33,7 +33,8 @@ def simulate_training(data_source, is_dir, output_model):
 
         # TRIGGER: Simulated Numerical Instability for testing Fail-Fast logic
         # If testing 'nan' detection, we flip the loss at epoch 4
-        if epoch == 4:
+        # Controlled by SIMULATE_FAILURE env var to avoid breaking scheduled runs
+        if epoch == 4 and os.getenv("SIMULATE_FAILURE") == "true":
             loss = float('nan')
             print(f"[TRAINER] Epoch {epoch} Metrics: Loss={loss}, Accuracy={accuracy:.2f}")
             print("🔴 CRITICAL: Numerical instability detected in weights. Terminating...")

@@ -141,10 +141,38 @@ def render_metrics(df):
         st.metric(label="Failure Rate (L10)", value=f"{fail_rate:.0f}%", delta="Historical Trend", delta_color="off")
 
     with col5:
-        # Displaying local time to show it's active
-        check_time = latest_run['timestamp'].strftime('%H:%M:%S')
-        check_date = latest_run['timestamp'].strftime('%Y-%m-%d')
-        st.metric(label=f"Last Sync ({check_date})", value=check_time)
+        # Calculate Next Retraining
+        try:
+            import all_config as config
+            retry_interval_days = getattr(config, 'RETRAINING_INTERVAL_DAYS', 7)
+            
+            # Try to find last successful training
+            last_train_time = datetime.now() # Default fallback (start from now)
+            if AUDIT_AVAILABLE:
+                audit = SentinelAuditLog()
+                train_entries = audit.query(category="training", action="success", limit=1)
+                if train_entries:
+                    last_train_time = datetime.fromisoformat(train_entries[0]['timestamp'])
+            
+            # Add interval
+            from datetime import timedelta
+            next_train = last_train_time + timedelta(days=retry_interval_days)
+            time_until = next_train - datetime.now()
+            
+            if time_until.total_seconds() < 0:
+                val = "Overdue"
+                lbl = "Next Retraining"
+            else:
+                days = time_until.days
+                hours = int(time_until.seconds / 3600)
+                val = f"{days}d {hours}h"
+                lbl = f"Next Retraining ({next_train.strftime('%b %d')})"
+                
+            st.metric(label=lbl, value=val, delta="Scheduled", delta_color="off")
+            
+        except ImportError:
+             # Fallback if config not found
+             st.metric(label="Next Retraining", value="Unknown")
 
 # --- COMPONENT: CHARTS ---
 

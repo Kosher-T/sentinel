@@ -38,6 +38,8 @@ except ImportError:
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] SENTINEL: %(message)s')
 
+import schedule
+
 class SentinelWatch:
     def __init__(self):
         self.db_path = config.DRIFT_HISTORY_DB
@@ -320,26 +322,97 @@ class SentinelWatch:
             logging.error(f"🔴 Decay Pipeline Error: {e}")
             return False
 
-    # --- MAIN WORKFLOW ---
+    def check_retraining_trigger(self, fails, total, root_cause):
+        """Checks if retraining should be triggered (Drift or Schedule)."""
+        # 1. Check Drift Trigger
+        is_consecutive = fails >= config.RETRAIN_TRIGGER_COUNT
+        is_ratio = (total > 0) and ((fails / total) >= config.DRIFT_FAILURE_RATIO)
+        is_drift_triggered = is_consecutive or is_ratio
 
-    def watch(self):
+        if is_drift_triggered:
+            return True, "Drift Threshold Exceeded"
+
+        return False, None
+
+    def execute_retraining(self, trigger_reason, root_cause=None):
+        """Executes the retraining pipeline."""
+        logging.info(f"--- TRIGGERING RETRAINING: {trigger_reason} ---")
+        
+        alert_msg = f"Retraining Initiated. Reason: {trigger_reason}"
+        if root_cause:
+             pattern = root_cause.get('drift_pattern', 'unknown')
+             alert_msg += f" | Drift Pattern: {pattern}"
+        self.send_alert("WARNING", alert_msg, event_type="retraining_start")
+
+        # Initialize Engine
+        engine = ExecutionEngine()
+        
+        # Use ARCHIVED data (recent failures) + TRAINING data (if needed)
+        # For scheduled retraining, we might want to use the entire dataset 
+        # For now, we stick to the existing data path logic or default
+        data_path = config.ARCHIVED_DATA_PATH
+        if trigger_reason == "Scheduled":
+             # If scheduled, we might want to train on everything or just re-verify
+             logging.info("🗓️ Scheduled run: Using accumulated history + training data")
+             
+        logging.info(f"🚀 Dispatching Training Job using data from: {data_path}")
+        self.audit.log("training", "start", {"data_path": str(data_path), "trigger": trigger_reason})
+        
+        success, challenger_model_path, result_payload = engine.run_training(data_path=data_path)
+        
+        if not success:
+            logging.critical(f"🔴 Retraining Failed: {result_payload}")
+            self.audit.log("training", "failure", {"error": str(result_payload)}, status="failure")
+            self.send_alert("CRITICAL", f"Automated Retraining Failed: {result_payload}", event_type="retraining_error")
+            self.state_tracker.update_from_event("retraining", success=False, details=str(result_payload))
+            return
+
+        # If success, result_payload contains metrics (Loss/Accuracy)
+        logging.info(f"✅ Retraining Complete. Metrics: {result_payload}")
+        self.audit.log("training", "success", {"metrics": result_payload})
+        self.send_alert("INFO", "Retraining Success. Proceeding to Validation.", event_type="retraining", metrics=result_payload)
+        self.state_tracker.update_from_event("retraining", success=True)
+        
+        logging.info("--- STEP 3: DECAY CHECK (GATEKEEPER) ---")
+        decay_passed = self.run_decay_pipeline(Path(challenger_model_path))  # type: ignore
+        
+        if decay_passed:
+            self.simulate_deployment(Path(challenger_model_path))  # type: ignore
+            self.send_alert("INFO", "Self-healing complete. New model deployed.", event_type="deployment")
+            self.state_tracker.update_from_event("deployment", success=True)
+            
+            # Update baselines BEFORE purging history
+            self.update_baselines(Path(challenger_model_path))  # type: ignore
+            
+            # Cleanup History
+            self.purge_drift_history()
+        else:
+            logging.critical("STOP! Retrained model failed Decay Check.")
+            self.send_alert("CRITICAL", "Retrained model failed Decay Check. Deployment Aborted.", event_type="decay_fail", metrics=result_payload)
+            self.state_tracker.update_from_event("decay_check", success=False)
+
+
+    # --- JOBS ---
+
+    def job_monitor(self):
+        """
+        Scheduled Job: Runs the drift monitoring pipeline.
+        """
+        logging.info("\n🔎 --- STARTING MONITORING JOB ---")
         self.simulate_cloud_connection()
         
         logging.info("--- STEP 1: MONITOR DATA DRIFT ---")
-        logging.info("ℹ️ Running Drift Check on CPU (this may take a moment for large batches)...")
         drift_score, status, root_cause = pipeline.run_drift_check()
         
-        if drift_score is None: return
+        if drift_score is None: 
+            logging.info("ℹ️ No new data to check.")
+            return
 
-        # Audit the drift check result (enriched with full per-component breakdown)
+        # Audit the drift check result
         drift_details = {"score": round(drift_score, 2), "threshold": config.DRIFT_THRESHOLD}
         if root_cause and status != "PASS":
-            drift_details["drift_pattern"] = root_cause.get("drift_pattern", "unknown")
-            drift_details["drifting_components"] = root_cause.get("drifting_components", 0)
-            drift_details["total_components"] = root_cause.get("total_components", 0)
-            # Full per-component data for rich dashboard display
-            drift_details["primary_drivers"] = root_cause.get("primary_drivers", [])
-            drift_details["per_component"] = root_cause.get("per_component", [])
+            drift_details.update(root_cause) # Add root cause details if available
+
         self.audit.log(
             "drift", f"check_{status.lower()}",
             drift_details,
@@ -348,7 +421,7 @@ class SentinelWatch:
 
         # 1. Handle data based on drift status
         if status == "PASS":
-            # PASS: Record to DB only, discard the incoming data (no archive needed)
+            # PASS: Record to DB only, discard the incoming data
             self.record_drift_result(drift_score, status, None, root_cause)
             self.discard_incoming_data()
         else:
@@ -359,72 +432,51 @@ class SentinelWatch:
         # 2. Check triggers
         is_triggered, fails, total = self.check_drift_history()
         
-        # 3. Update system state based on drift result
+        # 3. Update system state
         self.state_tracker.update_from_drift(drift_score, status, is_triggered)
         
         if status == "PASS":
             if not is_triggered:
-                logging.info("🟢 Drift Status: OK. Data discarded (no archive needed).")
+                logging.info("🟢 Drift Status: OK. Data discarded.")
                 return
             else:
                 logging.warning(f"⚠️ Current result PASS, but history shows instability ({fails}/{total} fails).")
-                return
-
-        logging.warning(f"⚠️ Drift Detected. Historical Window: {fails}/{total} failures.")
 
         if is_triggered:
-            logging.info("--- STEP 2: TRIGGER RETRAINING (EXECUTION ENGINE) ---")
             self.audit.log("drift", "threshold_triggered", {"fails": fails, "total": total})
-            
-            # Build alert message with root cause context
-            alert_msg = f"Drift threshold exceeded ({fails}/{total} in window). Initiating Retraining."
-            if root_cause:
-                pattern = root_cause.get('drift_pattern', 'unknown')
-                alert_msg += f" Pattern: {pattern} ({root_cause.get('drifting_components', '?')}/{root_cause.get('total_components', '?')} components)."
-            self.send_alert("WARNING", alert_msg, event_type="retraining")
-            
-            # Initialize Engine
-            engine = ExecutionEngine()
-            
-            # We point the engine to ARCHIVED_DATA_PATH to include all recent failures + the current batch
-            logging.info(f"🚀 Dispatching Training Job using data from: {config.ARCHIVED_DATA_PATH}")
-            self.audit.log("training", "start", {"data_path": str(config.ARCHIVED_DATA_PATH)})
-            success, challenger_model_path, result_payload = engine.run_training(data_path=config.ARCHIVED_DATA_PATH)
-            
-            if not success:
-                logging.critical(f"🔴 Retraining Failed: {result_payload}")
-                self.audit.log("training", "failure", {"error": str(result_payload)}, status="failure")
-                self.send_alert("CRITICAL", f"Automated Retraining Failed: {result_payload}", event_type="retraining_error")
-                self.state_tracker.update_from_event("retraining", success=False, details=str(result_payload))
-                return
-
-            # If success, result_payload contains metrics (Loss/Accuracy)
-            logging.info(f"✅ Retraining Complete. Metrics: {result_payload}")
-            self.audit.log("training", "success", {"metrics": result_payload})
-            self.send_alert("INFO", "Retraining Success. Proceeding to Validation.", event_type="retraining", metrics=result_payload)
-            self.state_tracker.update_from_event("retraining", success=True)
-            
-            logging.info("--- STEP 3: DECAY CHECK (GATEKEEPER) ---")
-            decay_passed = self.run_decay_pipeline(Path(challenger_model_path))  # type: ignore
-            
-            if decay_passed:
-                self.simulate_deployment(Path(challenger_model_path))  # type: ignore
-                self.send_alert("INFO", "Self-healing complete. New model deployed.", event_type="deployment")
-                self.state_tracker.update_from_event("deployment", success=True)
-                
-                # Update baselines BEFORE purging history
-                self.update_baselines(Path(challenger_model_path))  # type: ignore
-                
-                # Cleanup History
-                self.purge_drift_history()
-            else:
-                logging.critical("STOP! Retrained model failed Decay Check.")
-                self.send_alert("CRITICAL", "Retrained model failed Decay Check. Deployment Aborted.", event_type="decay_fail", metrics=result_payload)
-                self.state_tracker.update_from_event("decay_check", success=False)
-                
+            self.execute_retraining("Drift Threshold Exceeded", root_cause)
         else:
-            logging.info("ℹ️ Drift detected but threshold not yet met. Recorded and waiting.")
+            logging.info("ℹ️ Drift detected (or history unstable) but threshold not yet met.")
+
+    def job_retrain(self):
+        """
+        Scheduled Job: Force retraining to keep model fresh.
+        """
+        logging.info("\n🗓️ --- STARTING SCHEDULED RETRAINING JOB ---")
+        self.execute_retraining("Scheduled Retraining")
+
+
+    def start_service(self):
+        """
+        Main Service Loop using 'schedule' library.
+        """
+        logging.info("🛡️ SENTINEL WATCH SERVICE STARTED")
+        logging.info(f"   • Monitoring Interval: {config.MONITOR_INTERVAL_MINUTES} minutes")
+        logging.info(f"   • Retraining Interval: {config.RETRAINING_INTERVAL_DAYS} days")
+
+        # Schedule Jobs
+        schedule.every(config.MONITOR_INTERVAL_MINUTES).minutes.do(self.job_monitor)
+        schedule.every(config.RETRAINING_INTERVAL_DAYS).days.do(self.job_retrain)
+
+        # Run once on startup
+        self.job_monitor()
+
+        logging.info("⏳ Waiting for next scheduled job...")
+        
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
 
 if __name__ == "__main__":
     sentinel = SentinelWatch()
-    sentinel.watch()
+    sentinel.start_service()

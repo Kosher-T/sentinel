@@ -581,18 +581,19 @@ def run_setup() -> int:
     )
     
     schedule_map = {
-        1: "0 */6 * * *",
-        2: "0 */12 * * *",
-        3: "0 0 * * *",
-        4: None
+        1: ("0 */6 * * *", 360),
+        2: ("0 */12 * * *", 720),
+        3: ("0 0 * * *", 1440),
+        4: (None, 360) # Default to 6 hours if custom
     }
     
     if schedule_choice == 4:
         monitor_schedule = prompt("Enter cron expression", default="0 */6 * * *")
+        monitor_interval = 360 # Fallback
     else:
-        monitor_schedule = schedule_map[schedule_choice]
+        monitor_schedule, monitor_interval = schedule_map[schedule_choice]
     
-    print(f"✅ Schedule: {monitor_schedule}")
+    print(f"✅ Schedule: {monitor_schedule} (Interval: {monitor_interval} mins)")
     
     # --- Step 8: Golden Set ---
     print("\n🎯 GOLDEN SET")
@@ -626,7 +627,10 @@ def run_setup() -> int:
         'MONITOR_SCHEDULE': monitor_schedule,
         'RETRAIN_TRIGGER_COUNT': 3,
         'DRIFT_FAILURE_RATIO': 0.8,
+        'DRIFT_FAILURE_RATIO': 0.8,
         'TIMEFRAME_WINDOW': 5,
+        'MONITOR_INTERVAL_MINUTES': monitor_interval,
+        'RETRAINING_INTERVAL_DAYS': 7,
         'RETRAINING_SCRIPT': config.PROJECT_ROOT / "mock_train.py",
         'EXECUTION_TIMEOUT': 3600,
         'EXPECTED_CHALLENGER_PATH': config.FRESH_MODEL_PATH / "challenger_v2.pth",
