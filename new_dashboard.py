@@ -460,24 +460,60 @@ def render_execution_history(df):
             </div>
             """
 
+    # Original clean single-card look (heading + entries together)
     full_html = f"""
     <div style="background-color:#1e293b; border:1px solid #334155; border-radius:10px;
                 padding:1.25rem; font-family:sans-serif;">
-        <a href="?tab=History" target="_parent" style="display:flex; align-items:center; justify-content:space-between;
-                    font-size:1rem; font-weight:600; color:#f1f5f9; margin:0 0 1rem 0;
-                    text-decoration:none; cursor:pointer;"
-           onmouseover="this.querySelector('.arrow').style.opacity='1'"
-           onmouseout="this.querySelector('.arrow').style.opacity='0'">
-            <span>Execution History</span>
-            <span class="arrow" style="opacity:0; transition:opacity 0.2s; color:#60a5fa; font-size:0.85rem;">View all →</span>
-        </a>
+        <h3 style="font-size:1rem; font-weight:600; color:#f1f5f9; margin:0 0 1rem 0;">Execution History</h3>
         {entries_html}
     </div>
     """
-    # Calculate height based on number of entries
     num_entries = min(len(df), 10) if not df.empty else 1
     panel_height = 80 + num_entries * 48
     components.html(full_html, height=panel_height, scrolling=False)
+
+    # Transparent overlay positioned over the heading area via negative margin.
+    # This is a native <a> tag (outside the iframe) so it navigates correctly.
+    overlay_h = 52
+    spacer_h = panel_height - overlay_h
+    st.markdown(f"""
+    <style>
+        .exec-overlay {{
+            margin-top: -{panel_height}px;
+            height: {overlay_h}px;
+            position: relative;
+            z-index: 10;
+        }}
+        .exec-overlay a {{
+            display: flex;
+            align-items: flex-start;
+            justify-content: flex-end;
+            height: 100%;
+            padding: 0.1rem 1.9rem 0 0;
+            text-decoration: none;
+            border-radius: 10px 10px 0 0;
+        }}
+        .exec-overlay .view-all-text {{
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            color: #60a5fa;
+            font-size: 0.85rem;
+        }}
+        .exec-overlay a:hover .view-all-text {{
+            opacity: 1;
+        }}
+        .exec-spacer {{
+            height: {spacer_h}px;
+            pointer-events: none;
+        }}
+    </style>
+    <div class="exec-overlay">
+        <a href="?tab=History" target="_self">
+            <span class="view-all-text">View all →</span>
+        </a>
+    </div>
+    <div class="exec-spacer"></div>
+    """, unsafe_allow_html=True)
 
 
 def render_dashboard_tab():
@@ -839,7 +875,7 @@ def render_setup_required():
 
 
 # ╔══════════════════════════════════════════════════════════════╗
-# ║  MAIN                                                         ║
+# ║  MAIN                                                        ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 def main():
