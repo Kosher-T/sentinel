@@ -168,12 +168,20 @@ st.markdown("""
     }
 
     /* ===== REBASE BUTTON ===== */
-    .rebase-btn-wrap {
-        margin-top: 0.5rem;
+    .stButton > button[kind="secondary"] {
+        background-color: #1e293b !important;
+        color: #94a3b8 !important;
+        border: 1px solid #334155 !important;
+        border-radius: 6px !important;
+        font-size: 0.72rem !important;
+        padding: 0.3rem 0.6rem !important;
+        margin-top: 0.25rem;
+        transition: all 0.2s ease;
     }
-    .rebase-btn-wrap button {
-        width: 100%;
-        font-size: 0.75rem !important;
+    .stButton > button[kind="secondary"]:hover {
+        background-color: #334155 !important;
+        color: #e2e8f0 !important;
+        border-color: #22d3ee !important;
     }
 
     /* ===== HIDE STREAMLIT DEFAULTS ===== */
@@ -455,7 +463,14 @@ def render_execution_history(df):
     full_html = f"""
     <div style="background-color:#1e293b; border:1px solid #334155; border-radius:10px;
                 padding:1.25rem; font-family:sans-serif;">
-        <h3 style="font-size:1rem; font-weight:600; color:#f1f5f9; margin:0 0 1rem 0;">Execution History</h3>
+        <a href="?tab=History" target="_parent" style="display:flex; align-items:center; justify-content:space-between;
+                    font-size:1rem; font-weight:600; color:#f1f5f9; margin:0 0 1rem 0;
+                    text-decoration:none; cursor:pointer;"
+           onmouseover="this.querySelector('.arrow').style.opacity='1'"
+           onmouseout="this.querySelector('.arrow').style.opacity='0'">
+            <span>Execution History</span>
+            <span class="arrow" style="opacity:0; transition:opacity 0.2s; color:#60a5fa; font-size:0.85rem;">View all →</span>
+        </a>
         {entries_html}
     </div>
     """
