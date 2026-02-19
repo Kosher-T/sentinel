@@ -616,13 +616,169 @@ def render_rebase_wizard():
 # ╚══════════════════════════════════════════════════════════════╝
 
 def render_history_tab():
-    """Placeholder for the History tab."""
-    st.markdown("""
-    <div class="placeholder-page">
-        <h2>📜 History</h2>
-        <p>Execution history and audit logs will be displayed here.</p>
+    """Renders the History page with search, date filter, and paginated table."""
+
+    # --- Load all data ---
+    df = load_data()
+
+    if df.empty:
+        st.info("No execution history found. Data will appear after Sentinel runs.")
+        return
+
+    # --- Filter Row: Search + Date Range + Filter Button ---
+    col_search, col_date, col_filter = st.columns([5, 3, 1])
+
+    with col_search:
+        search_query = st.text_input(
+            "Search",
+            placeholder="Search Executions",
+            label_visibility="collapsed",
+            key="history_search"
+        )
+
+    with col_date:
+        min_date = df['timestamp'].min().date()
+        max_date = df['timestamp'].max().date()
+        date_range = st.date_input(
+            "Date Range",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+            label_visibility="collapsed",
+            key="history_date_range"
+        )
+
+    with col_filter:
+        filter_clicked = st.button("🔍 Filter", use_container_width=True, key="history_filter_btn")
+
+    # --- Apply Filters ---
+    filtered = df.copy()
+
+    # Date filter
+    if isinstance(date_range, tuple) and len(date_range) == 2:
+        start_date, end_date = date_range
+        filtered = filtered[
+            (filtered['timestamp'].dt.date >= start_date) &
+            (filtered['timestamp'].dt.date <= end_date)
+        ]
+
+    # Search filter
+    if search_query:
+        q = search_query.lower()
+        mask = (
+            filtered['status'].str.lower().str.contains(q, na=False) |
+            filtered['timestamp'].astype(str).str.lower().str.contains(q, na=False) |
+            filtered['data_path'].astype(str).str.lower().str.contains(q, na=False) |
+            filtered['drift_score'].astype(str).str.contains(q, na=False)
+        )
+        filtered = filtered[mask]
+
+    if filtered.empty:
+        st.info("No results match your filters.")
+        return
+
+    # --- Pagination ---
+    ROWS_PER_PAGE = 10
+    total_rows = len(filtered)
+    total_pages = max(1, (total_rows + ROWS_PER_PAGE - 1) // ROWS_PER_PAGE)
+
+    if "history_page" not in st.session_state:
+        st.session_state.history_page = 1
+    current_page = st.session_state.history_page
+    current_page = min(current_page, total_pages)
+
+    start_idx = (current_page - 1) * ROWS_PER_PAGE
+    end_idx = start_idx + ROWS_PER_PAGE
+    page_df = filtered.iloc[start_idx:end_idx]
+
+    # --- Build HTML Table ---
+    # Determine max drift score for progress bar scaling
+    max_drift = max(filtered['drift_score'].max(), 1)
+
+    rows_html = ""
+    for _, row in page_df.iterrows():
+        ts = row['timestamp'].strftime('%Y-%m-%d %H:%M:%S') if pd.notna(row['timestamp']) else "—"
+
+        # Status badge
+        if row['status'] == 'PASS':
+            status_html = '<span style="background:#166534; color:#4ade80; padding:4px 12px; border-radius:4px; font-size:0.8rem; font-weight:600;">Success</span>'
+        else:
+            status_html = '<span style="background:#7f1d1d; color:#f87171; padding:4px 12px; border-radius:4px; font-size:0.8rem; font-weight:600;">Fail</span>'
+
+        # Drift magnitude progress bar
+        score = row['drift_score']
+        threshold = row['threshold']
+        pct = min((score / max_drift) * 100, 100)
+        bar_color = "#22c55e" if row['status'] == 'PASS' else "#ef4444"
+        drift_html = f'''
+            <div style="font-size:0.82rem; color:#e2e8f0; margin-bottom:3px;">{score:.1f}%</div>
+            <div style="display:flex; align-items:center; gap:8px;">
+                <span style="width:10px; height:10px; border-radius:50%; background:{bar_color}; flex-shrink:0;"></span>
+                <div style="flex-grow:1; background:#334155; border-radius:4px; height:8px; overflow:hidden;">
+                    <div style="width:{pct:.1f}%; height:100%; background:{bar_color}; border-radius:4px;"></div>
+                </div>
+                <span style="color:#94a3b8; font-size:0.75rem; flex-shrink:0;">{score:.1f}%</span>
+            </div>
+        '''
+
+        # Threshold display
+        threshold_display = f"{threshold:.1f}%" if pd.notna(threshold) else "—"
+
+        # Data path
+        data_path = row.get('data_path', '—') or '—'
+
+        rows_html += f'''
+        <tr style="border-bottom:1px solid #1e293b;">
+            <td style="padding:16px 14px; color:#cbd5e1; font-size:0.85rem;">{ts}</td>
+            <td style="padding:16px 14px;">{status_html}</td>
+            <td style="padding:16px 14px; min-width:200px;">{drift_html}</td>
+            <td style="padding:16px 14px; color:#cbd5e1; font-size:0.85rem;">{threshold_display}</td>
+            <td style="padding:16px 14px; color:#94a3b8; font-size:0.82rem; font-family:monospace;">{data_path}</td>
+        </tr>
+        '''
+
+    table_html = f'''
+    <div style="background:#1e293b; border:1px solid #334155; border-radius:10px; overflow:hidden; font-family:sans-serif;">
+        <table style="width:100%; border-collapse:collapse;">
+            <thead>
+                <tr style="background:#162032; border-bottom:1px solid #334155;">
+                    <th style="padding:12px 14px; text-align:left; color:#94a3b8; font-size:0.8rem; font-weight:600;">Date & Time</th>
+                    <th style="padding:12px 14px; text-align:left; color:#94a3b8; font-size:0.8rem; font-weight:600;">Status</th>
+                    <th style="padding:12px 14px; text-align:left; color:#94a3b8; font-size:0.8rem; font-weight:600;">Drift Magnitude</th>
+                    <th style="padding:12px 14px; text-align:left; color:#94a3b8; font-size:0.8rem; font-weight:600;">Threshold</th>
+                    <th style="padding:12px 14px; text-align:left; color:#94a3b8; font-size:0.8rem; font-weight:600;">Data Path</th>
+                </tr>
+            </thead>
+            <tbody>
+                {rows_html}
+            </tbody>
+        </table>
     </div>
-    """, unsafe_allow_html=True)
+    '''
+
+    row_height = 72
+    table_height = 60 + len(page_df) * row_height + 10
+    components.html(table_html, height=table_height, scrolling=False)
+
+    # --- Pagination Controls ---
+    st.markdown("")
+    pagination_cols = st.columns([3, 1, 1, 1, 1, 1, 3])
+
+    with pagination_cols[1]:
+        if st.button("‹", disabled=(current_page <= 1), key="page_prev"):
+            st.session_state.history_page = current_page - 1
+            st.rerun()
+
+    with pagination_cols[2]:
+        st.markdown(f"<div style='text-align:center; padding:6px; color:#60a5fa; font-weight:600;'>{current_page}</div>", unsafe_allow_html=True)
+
+    with pagination_cols[3]:
+        st.markdown(f"<div style='text-align:center; padding:6px; color:#94a3b8; font-size:0.85rem;'>of {total_pages}</div>", unsafe_allow_html=True)
+
+    with pagination_cols[5]:
+        if st.button("›", disabled=(current_page >= total_pages), key="page_next"):
+            st.session_state.history_page = current_page + 1
+            st.rerun()
 
 
 def render_model_registry_tab():
