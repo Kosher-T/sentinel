@@ -20,13 +20,16 @@ try:
     from services.system_state_tracker import SystemStateTracker
     from services.audit_log import SentinelAuditLog
     from services.model_registry import ModelRegistry
+    from services.alert_utils import SentinelAlert
     REBASE_AVAILABLE = True
     AUDIT_AVAILABLE = True
     REGISTRY_AVAILABLE = True
+    ALERTS_AVAILABLE = True
 except ImportError:
     REBASE_AVAILABLE = False
     AUDIT_AVAILABLE = False
     REGISTRY_AVAILABLE = False
+    ALERTS_AVAILABLE = False
 
 # --- SETUP PAGE ---
 st.set_page_config(page_title=PAGE_TITLE, page_icon=PAGE_ICON, layout=LAYOUT)
@@ -601,6 +604,68 @@ def render_rebase_wizard():
             del st.session_state['show_rebase_wizard']
         st.rerun()
 
+# --- COMPONENT: ACTIVE ALERTS & ESCALATION ---
+
+ESCALATION_LABELS = {
+    0: "⏳ Pending",
+    1: "⚠️ Escalated (L1)",
+    2: "🔴 FINAL Escalation",
+}
+
+ESCALATION_BG = {
+    0: "#F59E0B",
+    1: "#F97316",
+    2: "#EF4444",
+}
+
+def render_active_alerts():
+    """Renders active (unacknowledged) alerts with escalation status and ack buttons."""
+    if not ALERTS_AVAILABLE:
+        return
+    
+    alert_engine = SentinelAlert()
+    pending = alert_engine.get_pending_alerts()
+    
+    if not pending:
+        return  # Don't show section if no active alerts
+    
+    st.markdown("---")
+    st.subheader(f"🚨 Active Alerts ({len(pending)})")
+    
+    # Bulk acknowledge button
+    col_header, col_ack_all = st.columns([4, 1])
+    with col_ack_all:
+        if st.button("✅ Acknowledge All", key="ack_all_btn", type="primary"):
+            alert_engine.acknowledge_all_alerts()
+            st.rerun()
+    
+    for alert in pending:
+        esc_level = alert.get("escalation_level", 0)
+        esc_label = ESCALATION_LABELS.get(esc_level, "Unknown")
+        esc_color = ESCALATION_BG.get(esc_level, "#6B7280")
+        level_name = {2: "WARNING", 3: "CRITICAL"}.get(alert.get("level", 2), "ALERT")
+        
+        col1, col2, col3, col4 = st.columns([2, 3, 1, 1])
+        
+        with col1:
+            st.markdown(
+                f"<span style='color:{esc_color};font-weight:bold;'>{esc_label}</span> "
+                f"| <code>{level_name}</code>",
+                unsafe_allow_html=True
+            )
+        
+        with col2:
+            st.markdown(f"{alert.get('event_type', 'unknown')}: {alert.get('message', '')[:80]}")
+        
+        with col3:
+            st.markdown(f"⏱️ {alert.get('elapsed_display', '?')} ago")
+        
+        with col4:
+            if st.button("✅ Ack", key=f"ack_{alert['alert_id']}"):
+                alert_engine.acknowledge_alert(alert["alert_id"])
+                st.rerun()
+
+
 # --- COMPONENT: MODEL REGISTRY ---
 
 STATUS_BADGES = {
@@ -1016,6 +1081,7 @@ def main():
     st.markdown("---")
 
     render_metrics(df)
+    render_active_alerts()
     render_drift_chart(df)
     render_root_cause()
     render_root_cause_trends()

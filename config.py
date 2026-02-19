@@ -97,3 +97,8 @@ DISTILL_MAP = {
     str(OLD_MODEL_PATH): str(PRODUCTION_DISTILLED_DIR),
     str(FRESH_MODEL_PATH): str(CHALLENGER_DISTILLED_DIR)
 }
+
+# --- ALERT ESCALATION SETTINGS ---
+ESCALATION_TIMEOUT_MINUTES = 15        # Minutes before first escalation
+ESCALATION_FINAL_TIMEOUT_MINUTES = 30  # Minutes before final escalation
+SECONDARY_ONCALL_EMAIL = ""            # Secondary on-call (configured via setup)

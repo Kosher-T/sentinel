@@ -50,6 +50,9 @@ class SentinelWatch:
         self.state_tracker = SystemStateTracker()
         self.audit = SentinelAuditLog()
         self.registry = ModelRegistry()
+        
+        # Start alert escalation watchdog
+        self.alert_engine.start_escalation_watchdog()
 
     def _init_db(self):
         """Initializes the SQLite database if it doesn't exist."""
@@ -458,6 +461,8 @@ class SentinelWatch:
         if status == "PASS":
             if not is_triggered:
                 logging.info("🟢 Drift Status: OK. Data discarded.")
+                # Auto-acknowledge pending escalations when system is stable
+                self.alert_engine.acknowledge_all_alerts()
                 return
             else:
                 logging.warning(f"⚠️ Current result PASS, but history shows instability ({fails}/{total} fails).")

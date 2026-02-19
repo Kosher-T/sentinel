@@ -1,4 +1,5 @@
 import sys
+import os
 import json
 import smtplib
 import logging
@@ -32,11 +33,37 @@ SMTP_PORT = 587
 SMTP_USER = "29b057e9b13807"
 SMTP_PASSWORD = "22a33396821f85"
 RECIPIENT_EMAIL = "itorousa@gmail.com"
+SECONDARY_ONCALL_EMAIL = getattr(config, 'SECONDARY_ONCALL_EMAIL', '') if 'config' in dir() else ''
 
 # Brand Assets
 BRAND_COLOR = "#00E5FF" # Electric Cyan
 FONT_STACK = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
 MONO_STACK = "'JetBrains Mono', 'Fira Code', 'Courier New', monospace"
+
+# Escalation Service
+try:
+    from services.alert_escalation import AlertEscalationTracker
+    ESCALATION_AVAILABLE = True
+except ImportError:
+    try:
+        from alert_escalation import AlertEscalationTracker  # type: ignore
+        ESCALATION_AVAILABLE = True
+    except ImportError:
+        ESCALATION_AVAILABLE = False
+
+
+def _is_headless():
+    """Detect if running on a headless/cloud system where desktop notifications are useless."""
+    # No display server = no desktop notifications
+    if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+        return True
+    # Running inside Docker
+    if Path("/.dockerenv").exists():
+        return True
+    return False
+
+
+IS_HEADLESS = _is_headless()
 
 class SentinelAlert:
     def __init__(self):
@@ -45,6 +72,13 @@ class SentinelAlert:
             "retraining_count": 0,
             "deployment_count": 0
         })
+        
+        # Initialize escalation tracker with callback
+        self.escalation_tracker = None
+        if ESCALATION_AVAILABLE:
+            self.escalation_tracker = AlertEscalationTracker(
+                escalation_callback=self._handle_escalation
+            )
 
     def _load_state(self, filepath, default):
         if filepath.exists():
@@ -78,6 +112,9 @@ class SentinelAlert:
         return "#8E8E93", "rgba(142, 142, 147, 0.1)", "SYSTEM_LOG"
 
     def _send_system_notification(self, title, message):
+        if IS_HEADLESS:
+            logging.debug(f"Headless environment detected. Skipping system notification: {title}")
+            return
         try:
             from plyer import notification
             notification.notify(
@@ -209,6 +246,76 @@ class SentinelAlert:
             # Reverted to original multi-info format, but removed the "- " hyphen
             email_subject = f"{title} {event_type.replace('_', ' ').title()}"
             self._send_email(level, email_subject, message, metrics)
+        
+        # Track for escalation (WARNING and CRITICAL only)
+        if self.escalation_tracker and level >= 2:
+            self.escalation_tracker.track(level, event_type, message)
+
+    def _handle_escalation(self, alert_dict, escalation_level):
+        """
+        Callback invoked by AlertEscalationTracker when an alert needs escalation.
+        
+        Level 1: Send to secondary on-call
+        Level 2: Send urgent to both contacts
+        """
+        alert_id = alert_dict.get('alert_id', 'unknown')
+        event_type = alert_dict.get('event_type', 'unknown')
+        original_msg = alert_dict.get('message', '')
+        original_level = alert_dict.get('level', 2)
+        
+        if escalation_level == 1:
+            esc_msg = (
+                f"⚠️ ESCALATION: The following alert has been unacknowledged "
+                f"for {getattr(config, 'ESCALATION_TIMEOUT_MINUTES', 15)} minutes.\n\n"
+                f"Original Alert ({event_type}): {original_msg}"
+            )
+            subject = f"🔴 [SENTINEL:ESCALATION] Unacknowledged Alert - {event_type.replace('_', ' ').title()}"
+            
+            # Send to secondary on-call if configured
+            target = SECONDARY_ONCALL_EMAIL or RECIPIENT_EMAIL
+            logging.warning(f"📧 Escalation Level 1 → {target} for alert {alert_id}")
+            self._send_email(3, subject, esc_msg, None)
+            
+        elif escalation_level == 2:
+            esc_msg = (
+                f"🔴 FINAL ESCALATION: Alert still unacknowledged after "
+                f"{getattr(config, 'ESCALATION_FINAL_TIMEOUT_MINUTES', 30)} minutes.\n\n"
+                f"Original Alert ({event_type}): {original_msg}\n\n"
+                f"Immediate attention required."
+            )
+            subject = f"🔴🔴 [SENTINEL:FINAL ESCALATION] URGENT - {event_type.replace('_', ' ').title()}"
+            
+            logging.critical(f"📧 FINAL Escalation → ALL contacts for alert {alert_id}")
+            self._send_email(3, subject, esc_msg, None)
+
+    def start_escalation_watchdog(self):
+        """Start the background escalation watchdog thread."""
+        if self.escalation_tracker:
+            self.escalation_tracker.start_watchdog()
+
+    def acknowledge_alert(self, alert_id):
+        """Acknowledge a specific alert to stop its escalation."""
+        if self.escalation_tracker:
+            return self.escalation_tracker.acknowledge(alert_id)
+        return False
+
+    def acknowledge_all_alerts(self):
+        """Acknowledge all pending alerts (e.g., when system returns to NOMINAL)."""
+        if self.escalation_tracker:
+            return self.escalation_tracker.acknowledge_all()
+        return 0
+
+    def get_pending_alerts(self):
+        """Get list of unacknowledged pending alerts."""
+        if self.escalation_tracker:
+            return self.escalation_tracker.get_pending()
+        return []
+
+    def get_pending_alert_count(self):
+        """Get count of unacknowledged alerts."""
+        if self.escalation_tracker:
+            return self.escalation_tracker.get_pending_count()
+        return 0
 
 
 if __name__ == "__main__":
