@@ -26,6 +26,7 @@ try:
     from services.data_rotator import DataRotator
     from services.system_state_tracker import SystemStateTracker
     from services.audit_log import SentinelAuditLog
+    from services.model_registry import ModelRegistry
 except ImportError:
     # Fallback if running from a different context
     from execution_engine import ExecutionEngine  # type: ignore
@@ -34,6 +35,7 @@ except ImportError:
     from data_rotator import DataRotator  # type: ignore
     from system_state_tracker import SystemStateTracker  # type: ignore
     from audit_log import SentinelAuditLog  # type: ignore
+    from model_registry import ModelRegistry  # type: ignore
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] SENTINEL: %(message)s')
@@ -47,6 +49,7 @@ class SentinelWatch:
         self.alert_engine = SentinelAlert()
         self.state_tracker = SystemStateTracker()
         self.audit = SentinelAuditLog()
+        self.registry = ModelRegistry()
 
     def _init_db(self):
         """Initializes the SQLite database if it doesn't exist."""
@@ -373,13 +376,30 @@ class SentinelWatch:
         self.send_alert("INFO", "Retraining Success. Proceeding to Validation.", event_type="retraining", metrics=result_payload)
         self.state_tracker.update_from_event("retraining", success=True)
         
+        # --- MODEL REGISTRY: Register new version ---
+        current_prod = self.registry.get_current_production()
+        parent_version = current_prod["version"] if current_prod else None
+        model_version = self.registry.register_model(
+            model_path=str(challenger_model_path),
+            source="retrain",
+            trigger_reason=trigger_reason,
+            training_metrics=result_payload if isinstance(result_payload, dict) else None,
+            parent_version=parent_version,
+        )
+        
         logging.info("--- STEP 3: DECAY CHECK (GATEKEEPER) ---")
         decay_passed = self.run_decay_pipeline(Path(challenger_model_path))  # type: ignore
+        
+        # --- MODEL REGISTRY: Record validation result ---
+        self.registry.update_validation(model_version, passed=decay_passed)
         
         if decay_passed:
             self.simulate_deployment(Path(challenger_model_path))  # type: ignore
             self.send_alert("INFO", "Self-healing complete. New model deployed.", event_type="deployment")
             self.state_tracker.update_from_event("deployment", success=True)
+            
+            # --- MODEL REGISTRY: Record deployment ---
+            self.registry.record_deployment(model_version)
             
             # Update baselines BEFORE purging history
             self.update_baselines(Path(challenger_model_path))  # type: ignore

@@ -71,6 +71,7 @@ CRITICAL_LOG_ERRORS = ["nan", "inf", "Out of memory", "CUDA_ERROR_OUT_OF_MEMORY"
 DRIFT_HISTORY_DB = DRIFT_MONITOR_ROOT / "drift_history.db" # Updated to .db to match dashboard
 RETRAIN_LOG = DRIFT_MONITOR_ROOT / "retrain_events.json"
 MODEL_HISTORY_FILE = MODEL_DECAY_ROOT / "model_run_history.json"
+MODEL_REGISTRY_DB = DRIFT_MONITOR_ROOT / "model_registry.db"
 
 # --- HARDWARE ---
 # Forces CPU for monitoring tasks to avoid interrupting heavy GPU training sessions

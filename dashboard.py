@@ -19,11 +19,14 @@ try:
     from services.rebase_workflow import RebaseWorkflow, RebaseMethod
     from services.system_state_tracker import SystemStateTracker
     from services.audit_log import SentinelAuditLog
+    from services.model_registry import ModelRegistry
     REBASE_AVAILABLE = True
     AUDIT_AVAILABLE = True
+    REGISTRY_AVAILABLE = True
 except ImportError:
     REBASE_AVAILABLE = False
     AUDIT_AVAILABLE = False
+    REGISTRY_AVAILABLE = False
 
 # --- SETUP PAGE ---
 st.set_page_config(page_title=PAGE_TITLE, page_icon=PAGE_ICON, layout=LAYOUT)
@@ -598,6 +601,225 @@ def render_rebase_wizard():
             del st.session_state['show_rebase_wizard']
         st.rerun()
 
+# --- COMPONENT: MODEL REGISTRY ---
+
+STATUS_BADGES = {
+    "deployed": "🚀 Deployed",
+    "validated": "✅ Validated",
+    "rejected": "🔴 Rejected",
+    "registered": "⏳ Registered",
+}
+
+STATUS_COLORS = {
+    "deployed": "#059669",
+    "validated": "#22C55E",
+    "rejected": "#EF4444",
+    "registered": "#F59E0B",
+}
+
+def render_model_registry():
+    """Renders the Model Registry section with version timeline and metrics trends."""
+    if not REGISTRY_AVAILABLE:
+        return
+    
+    st.markdown("---")
+    st.subheader("📦 Model Registry")
+    
+    registry = ModelRegistry()
+    history = registry.get_history(limit=50)
+    
+    if not history:
+        st.info("No model versions registered yet. Versions will appear after Sentinel triggers retraining.")
+        return
+    
+    # --- Current Production Card ---
+    current = registry.get_current_production()
+    total_versions = registry.get_version_count()
+    total_deployments = registry.get_deployment_count()
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        if current:
+            st.metric(
+                label="Production Model",
+                value=current["version"],
+                delta=f"Since {current.get('deployment_timestamp', 'N/A')[:10]}",
+                delta_color="off"
+            )
+        else:
+            st.metric(label="Production Model", value="None", delta="No deployment yet", delta_color="off")
+    
+    with col2:
+        st.metric(label="Total Versions", value=total_versions)
+    
+    with col3:
+        st.metric(label="Total Deployments", value=total_deployments)
+    
+    with col4:
+        if current:
+            metrics = current.get("training_metrics_json", {})
+            if isinstance(metrics, dict):
+                acc = metrics.get("Accuracy", metrics.get("accuracy"))
+                if acc is not None:
+                    st.metric(label="Production Accuracy", value=f"{float(acc):.2f}")
+                else:
+                    st.metric(label="Production Accuracy", value="—")
+            else:
+                st.metric(label="Production Accuracy", value="—")
+        else:
+            st.metric(label="Production Accuracy", value="—")
+    
+    # --- Version Timeline Table ---
+    st.markdown("")
+    st.markdown("**Version Timeline**")
+    
+    rows = []
+    for v in history:
+        status = v.get("status", "registered")
+        badge = STATUS_BADGES.get(status, status)
+        
+        # Extract training metrics summary
+        t_metrics = v.get("training_metrics_json", {})
+        if isinstance(t_metrics, dict):
+            loss = t_metrics.get("Loss", t_metrics.get("loss", "—"))
+            acc = t_metrics.get("Accuracy", t_metrics.get("accuracy", "—"))
+            if isinstance(loss, float):
+                loss = f"{loss:.4f}"
+            if isinstance(acc, float):
+                acc = f"{acc:.2f}"
+        else:
+            loss = "—"
+            acc = "—"
+        
+        rows.append({
+            "Version": v["version"],
+            "Status": badge,
+            "Source": v.get("source", "—"),
+            "Trigger": v.get("trigger_reason", "—"),
+            "Loss": loss,
+            "Accuracy": acc,
+            "Registered": v.get("registered_at", "—"),
+            "Deployed": v.get("deployment_timestamp", "—") or "—",
+            "Parent": v.get("parent_version", "—") or "—",
+        })
+    
+    df_versions = pd.DataFrame(rows)
+    st.dataframe(
+        df_versions,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Version": st.column_config.TextColumn("Version", width="small"),
+            "Status": st.column_config.TextColumn("Status", width="small"),
+            "Source": st.column_config.TextColumn("Source", width="small"),
+            "Trigger": st.column_config.TextColumn("Trigger", width="medium"),
+            "Loss": st.column_config.TextColumn("Loss", width="small"),
+            "Accuracy": st.column_config.TextColumn("Accuracy", width="small"),
+            "Registered": st.column_config.TextColumn("Registered", width="medium"),
+            "Deployed": st.column_config.TextColumn("Deployed", width="medium"),
+            "Parent": st.column_config.TextColumn("Parent", width="small"),
+        }
+    )
+    
+    # --- Training Metrics Trend Chart ---
+    trend = registry.get_metrics_trend(limit=20)
+    if len(trend) >= 2:
+        st.markdown("")
+        st.markdown("**Training Metrics Across Versions**")
+        
+        versions = [t["version"] for t in trend]
+        
+        fig = go.Figure()
+        
+        # Accuracy line
+        accuracies = [t.get("Accuracy", t.get("accuracy")) for t in trend]
+        if any(a is not None for a in accuracies):
+            fig.add_trace(go.Scatter(
+                x=versions,
+                y=[float(a) if a is not None else None for a in accuracies],
+                mode='lines+markers',
+                name='Accuracy',
+                line=dict(color='#22C55E', width=3),
+                marker=dict(size=8),
+                yaxis='y1'
+            ))
+        
+        # Loss line (secondary axis)
+        losses = [t.get("Loss", t.get("loss")) for t in trend]
+        if any(l is not None for l in losses):
+            fig.add_trace(go.Scatter(
+                x=versions,
+                y=[float(l) if l is not None else None for l in losses],
+                mode='lines+markers',
+                name='Loss',
+                line=dict(color='#EF4444', width=2, dash='dot'),
+                marker=dict(size=6),
+                yaxis='y2'
+            ))
+        
+        # Color markers by deployment status
+        status_list = [t.get("status", "") for t in trend]
+        deployed_x = [v for v, s in zip(versions, status_list) if s == "deployed"]
+        deployed_y = [float(a) if a is not None else None for a, s in zip(accuracies, status_list) if s == "deployed"]
+        if deployed_x and any(y is not None for y in deployed_y):
+            fig.add_trace(go.Scatter(
+                x=deployed_x,
+                y=deployed_y,
+                mode='markers',
+                name='Deployed',
+                marker=dict(size=14, color='#059669', symbol='star', line=dict(width=2, color='white')),
+                yaxis='y1'
+            ))
+        
+        fig.update_layout(
+            xaxis_title="Model Version",
+            yaxis=dict(title="Accuracy", side="left"),
+            yaxis2=dict(title="Loss", side="right", overlaying="y"),
+            hovermode="x unified",
+            margin=dict(l=0, r=0, t=30, b=0),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            height=350,
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # --- Version Detail Expander ---
+    if history:
+        with st.expander("🔍 Version Details", expanded=False):
+            version_names = [v["version"] for v in history]
+            selected = st.selectbox("Select version", options=version_names, key="registry_version_select")
+            
+            detail = registry.get_version(selected)
+            if detail:
+                detail_col1, detail_col2 = st.columns(2)
+                
+                with detail_col1:
+                    st.markdown(f"**Version:** {detail['version']}")
+                    st.markdown(f"**Status:** {STATUS_BADGES.get(detail.get('status', ''), detail.get('status', ''))}")
+                    st.markdown(f"**Source:** {detail.get('source', '—')}")
+                    st.markdown(f"**Trigger:** {detail.get('trigger_reason', '—')}")
+                    st.markdown(f"**Parent:** {detail.get('parent_version', '—') or '—'}")
+                    st.markdown(f"**Model Path:** `{detail.get('model_path', '—')}`")
+                
+                with detail_col2:
+                    st.markdown(f"**Registered:** {detail.get('registered_at', '—')}")
+                    st.markdown(f"**Deployed:** {detail.get('deployment_timestamp', '—') or '—'}")
+                    
+                    t = detail.get('training_metrics_json', {})
+                    if isinstance(t, dict) and t:
+                        st.markdown("**Training Metrics:**")
+                        st.json(t)
+                    
+                    d = detail.get('decay_metrics_json', {})
+                    if isinstance(d, dict) and d:
+                        st.markdown("**Decay Metrics:**")
+                        st.json(d)
+                    
+                    if detail.get('notes'):
+                        st.markdown(f"**Notes:** {detail['notes']}")
+
+
 # --- COMPONENT: AUDIT LOG ---
 
 # Category colors for visual distinction
@@ -798,6 +1020,7 @@ def main():
     render_root_cause()
     render_root_cause_trends()
     render_history_table(df)
+    render_model_registry()
     render_audit_log()
 
     # Auto Refresh Logic
