@@ -141,7 +141,12 @@ def render_metrics(df):
         st.metric(label="Latest Status", value=latest_run['status'], delta="System Check", delta_color=status_color)
     
     with col3:
-        st.metric(label="Drift Score", value=f"{latest_run['drift_score']:.2f}%", delta=f"Limit: {latest_run['threshold']}%", delta_color="inverse")
+        ci_display = ""
+        if 'ci_low' in df.columns and pd.notna(latest_run.get('ci_low')) and pd.notna(latest_run.get('ci_high')):
+            margin = (latest_run['ci_high'] - latest_run['ci_low']) / 2
+            st.metric(label="Drift Score", value=f"{latest_run['drift_score']:.2f}% ± {margin:.2f}%", delta=f"Limit: {latest_run['threshold']}%", delta_color="inverse")
+        else:
+            st.metric(label="Drift Score", value=f"{latest_run['drift_score']:.2f}%", delta=f"Limit: {latest_run['threshold']}%", delta_color="inverse")
 
     with col4:
         st.metric(label="Failure Rate (L10)", value=f"{fail_rate:.0f}%", delta="Historical Trend", delta_color="off")
@@ -210,6 +215,32 @@ def render_drift_chart(df):
         name='Threshold',
         line=dict(color='#EF4444', width=2, dash='dash')
     ))
+
+    # Confidence Interval Band (if data is available)
+    if 'ci_low' in df.columns and 'ci_high' in df.columns:
+        ci_df = df.dropna(subset=['ci_low', 'ci_high'])
+        if not ci_df.empty:
+            # Upper bound (invisible, defines the top of fill)
+            fig.add_trace(go.Scatter(
+                x=ci_df['timestamp'],
+                y=ci_df['ci_high'],
+                mode='lines',
+                line=dict(width=0),
+                showlegend=False,
+                hoverinfo='skip',
+            ))
+            # Lower bound with fill to upper
+            fig.add_trace(go.Scatter(
+                x=ci_df['timestamp'],
+                y=ci_df['ci_low'],
+                mode='lines',
+                line=dict(width=0),
+                fill='tonexty',
+                fillcolor='rgba(79, 70, 229, 0.15)',
+                name='90% CI',
+                hovertemplate='CI: %{y:.2f}% – %{customdata:.2f}%<extra></extra>',
+                customdata=ci_df['ci_high'],
+            ))
 
     fig.update_layout(
         xaxis_title="Time",

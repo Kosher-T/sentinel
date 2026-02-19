@@ -71,6 +71,10 @@ class SentinelWatch:
             c.execute("ALTER TABLE drift_logs ADD COLUMN data_path TEXT")
         if 'root_cause_json' not in columns:
             c.execute("ALTER TABLE drift_logs ADD COLUMN root_cause_json TEXT")
+        if 'ci_low' not in columns:
+            c.execute("ALTER TABLE drift_logs ADD COLUMN ci_low REAL")
+        if 'ci_high' not in columns:
+            c.execute("ALTER TABLE drift_logs ADD COLUMN ci_high REAL")
             
         conn.commit()
         conn.close()
@@ -260,13 +264,15 @@ class SentinelWatch:
         logging.error(f"🔴 Timeout: Distiller did not produce {distilled_name} in time.")
         return None
 
-    def record_drift_result(self, score, status, folder_path=None, root_cause=None):
+    def record_drift_result(self, score, status, folder_path=None, root_cause=None, confidence_interval=None):
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         rc_json = json.dumps(root_cause) if root_cause else None
-        c.execute("INSERT INTO drift_logs (timestamp, drift_score, status, threshold, data_path, root_cause_json) VALUES (?, ?, ?, ?, ?, ?)",
-                  (timestamp, score, status, config.DRIFT_THRESHOLD, folder_path, rc_json))
+        ci_low = confidence_interval.get("low") * 100 if confidence_interval else None
+        ci_high = confidence_interval.get("high") * 100 if confidence_interval else None
+        c.execute("INSERT INTO drift_logs (timestamp, drift_score, status, threshold, data_path, root_cause_json, ci_low, ci_high) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                  (timestamp, score, status, config.DRIFT_THRESHOLD, folder_path, rc_json, ci_low, ci_high))
         conn.commit()
         conn.close()
 
@@ -425,7 +431,7 @@ class SentinelWatch:
         self.simulate_cloud_connection()
         
         logging.info("--- STEP 1: MONITOR DATA DRIFT ---")
-        drift_score, status, root_cause = pipeline.run_drift_check()
+        drift_score, status, root_cause, confidence_interval = pipeline.run_drift_check()
         
         if drift_score is None: 
             logging.info("ℹ️ No new data to check.")
@@ -433,6 +439,10 @@ class SentinelWatch:
 
         # Audit the drift check result
         drift_details = {"score": round(drift_score, 2), "threshold": config.DRIFT_THRESHOLD}
+        if confidence_interval:
+            drift_details["ci_low"] = round(confidence_interval.get("low", 0) * 100, 2)
+            drift_details["ci_high"] = round(confidence_interval.get("high", 0) * 100, 2)
+            drift_details["ci_margin"] = round(confidence_interval.get("margin", 0) * 100, 2)
         if root_cause and status != "PASS":
             drift_details.update(root_cause) # Add root cause details if available
 
@@ -445,12 +455,12 @@ class SentinelWatch:
         # 1. Handle data based on drift status
         if status == "PASS":
             # PASS: Record to DB only, discard the incoming data
-            self.record_drift_result(drift_score, status, None, root_cause)
+            self.record_drift_result(drift_score, status, None, root_cause, confidence_interval)
             self.discard_incoming_data()
         else:
             # FAIL: Archive the data and record to DB
             archived_path = self.archive_incoming_data(drift_score, status)
-            self.record_drift_result(drift_score, status, archived_path, root_cause)
+            self.record_drift_result(drift_score, status, archived_path, root_cause, confidence_interval)
         
         # 2. Check triggers
         is_triggered, fails, total = self.check_drift_history()

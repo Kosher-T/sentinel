@@ -3,6 +3,11 @@ from scipy.stats import wasserstein_distance, entropy, ks_2samp, skew
 from sklearn.decomposition import PCA
 from sklearn.metrics.pairwise import cosine_similarity
 
+# Bootstrap settings
+BOOTSTRAP_ITERATIONS = 200
+CI_PERCENTILE_LOW = 5    # 90% CI: 5th to 95th percentile
+CI_PERCENTILE_HIGH = 95
+
 def kl_divergence(p_samples, q_samples, bins=50):
     """Calculates KL Divergence between two distributions using a histogram approach."""
     min_val = min(np.min(p_samples), np.min(q_samples))
@@ -22,7 +27,7 @@ def mmd_linear(X, Y):
     delta = np.mean(X, axis=0) - np.mean(Y, axis=0)
     return np.sqrt(np.dot(delta, delta.T))
 
-def analyze_drift(baseline, current):
+def analyze_drift(baseline, current, n_bootstrap=BOOTSTRAP_ITERATIONS):
     """
     Compares two embedding distributions. 
     Adjusted to be less sensitive to magnitude shifts and trust Cosine more.
@@ -31,6 +36,7 @@ def analyze_drift(baseline, current):
         drift_probability: float between 0 and 1
         metrics_breakdown: dict of aggregate metric values
         root_cause: dict with per-component breakdown, primary drivers, and drift pattern
+        confidence_interval: dict with 'low', 'high', 'margin' (all as 0-1 probabilities)
     """
     if len(baseline.shape) > 2:
         baseline = baseline.reshape(baseline.shape[0], -1)
@@ -151,4 +157,83 @@ def analyze_drift(baseline, current):
         "total_components": n_components,
     }
 
-    return drift_probability, metrics_breakdown, root_cause
+    # --- STEP 5: Bootstrap Confidence Interval ---
+    confidence_interval = _bootstrap_confidence_interval(
+        baseline, current, n_bootstrap=n_bootstrap
+    )
+
+    return drift_probability, metrics_breakdown, root_cause, confidence_interval
+
+
+def _compute_drift_score(baseline, current):
+    """
+    Compute a single drift probability score from two embedding arrays.
+    Isolated helper used by both analyze_drift() and bootstrap iterations.
+    """
+    if len(baseline.shape) > 2:
+        baseline = baseline.reshape(baseline.shape[0], -1)
+        current = current.reshape(current.shape[0], -1)
+
+    n_components = min(baseline.shape[0], baseline.shape[1], 10)
+    pca = PCA(n_components=n_components)
+
+    b_pca = pca.fit_transform(baseline)
+    c_pca = pca.transform(current)
+
+    avg_wd = np.mean([wasserstein_distance(b_pca[:, i], c_pca[:, i]) for i in range(b_pca.shape[1])])
+    avg_kl = np.mean([kl_divergence(b_pca[:, i], c_pca[:, i]) for i in range(b_pca.shape[1])])
+
+    b_centroid = np.mean(baseline, axis=0).reshape(1, -1)
+    c_centroid = np.mean(current, axis=0).reshape(1, -1)
+    cos_dist = 1 - cosine_similarity(b_centroid, c_centroid)[0][0]
+
+    mmd_val = mmd_linear(baseline, current)
+
+    s_wd = 1 - np.exp(-0.05 * avg_wd)
+    s_kl = 1 - np.exp(-0.2 * avg_kl)
+    s_cos = 1 - np.exp(-10.0 * cos_dist)
+    s_mmd = 1 - np.exp(-0.01 * mmd_val)
+
+    return (
+        s_wd * 0.04 +
+        s_kl * 0.05 +
+        s_cos * 0.90 +
+        s_mmd * 0.01
+    )
+
+
+def _bootstrap_confidence_interval(baseline, current, n_bootstrap=BOOTSTRAP_ITERATIONS):
+    """
+    Estimate confidence interval for drift score via bootstrap resampling.
+    
+    Resamples both distributions with replacement, recomputes drift score each
+    iteration, and uses percentiles to form the CI.
+    
+    Returns:
+        dict with 'low', 'high', 'margin' (all as 0-1 probabilities)
+    """
+    n_base = len(baseline)
+    n_curr = len(current)
+    scores = []
+
+    for _ in range(n_bootstrap):
+        b_idx = np.random.choice(n_base, size=n_base, replace=True)
+        c_idx = np.random.choice(n_curr, size=n_curr, replace=True)
+        try:
+            score = _compute_drift_score(baseline[b_idx], current[c_idx])
+            scores.append(score)
+        except Exception:
+            continue  # Skip degenerate resamples
+
+    if not scores:
+        return {"low": 0.0, "high": 0.0, "margin": 0.0}
+
+    low = float(np.percentile(scores, CI_PERCENTILE_LOW))
+    high = float(np.percentile(scores, CI_PERCENTILE_HIGH))
+    margin = (high - low) / 2
+
+    return {
+        "low": round(low, 6),
+        "high": round(high, 6),
+        "margin": round(margin, 6),
+    }

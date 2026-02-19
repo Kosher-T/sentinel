@@ -76,7 +76,7 @@ def prepare_data_groups(directory, stack_size, domain):
     
     return build_groups(directory, stack_size, extensions=extensions)
 
-def print_drift_report(score, metrics_breakdown, num_baseline, num_incoming, root_cause=None):
+def print_drift_report(score, metrics_breakdown, num_baseline, num_incoming, root_cause=None, confidence_interval=None):
     """Prints a clean, formatted report to the console."""
     threshold = getattr(config, 'DRIFT_THRESHOLD', 25.0)
     status = "FAIL" if score > threshold else "PASS"
@@ -86,7 +86,16 @@ def print_drift_report(score, metrics_breakdown, num_baseline, num_incoming, roo
     print(f"📡 DATA DRIFT REPORT")
     print("-" * 30)
     print(f"Status:      {color_icon} {status}")
-    print(f"Drift Score: {score:.2f}%")
+    
+    # Confidence Interval display
+    if confidence_interval and confidence_interval.get("margin", 0) > 0:
+        margin_pct = confidence_interval["margin"] * 100
+        low_pct = confidence_interval["low"] * 100
+        high_pct = confidence_interval["high"] * 100
+        print(f"Drift Score: {score:.2f}% ± {margin_pct:.2f}%  [{low_pct:.2f}% – {high_pct:.2f}%]")
+    else:
+        print(f"Drift Score: {score:.2f}%")
+    
     print(f"Baseline:    {num_baseline} samples (stacks/units)")
     print(f"Incoming:    {num_incoming} samples (stacks/units)")
     print("-" * 30)
@@ -201,18 +210,18 @@ def run_drift_analysis(baseline_path, incoming_path, force_recalc=False, latent_
 
         # --- PHASE 4: ANALYSIS ---
         print("\n⚖️  Calculating multi-metric distribution divergence...")
-        drift_prob, metrics_breakdown, root_cause = analyzer.analyze_drift(baseline_emb, incoming_emb)  # type: ignore
+        drift_prob, metrics_breakdown, root_cause, confidence_interval = analyzer.analyze_drift(baseline_emb, incoming_emb)  # type: ignore
         
         final_percentage = drift_prob * 100
-        status = print_drift_report(final_percentage, metrics_breakdown, len(baseline_groups), len(incoming_groups), root_cause)
+        status = print_drift_report(final_percentage, metrics_breakdown, len(baseline_groups), len(incoming_groups), root_cause, confidence_interval)
         
-        return final_percentage, status, root_cause
+        return final_percentage, status, root_cause, confidence_interval
         
     except Exception as e:
         print(f"\n🔴 Analysis failed: {e}")
         import traceback
         traceback.print_exc()
-        return None, "ERROR", None
+        return None, "ERROR", None, None
     
     finally:
         if model_instance is not None:
