@@ -817,24 +817,254 @@ def render_history_tab():
             st.rerun()
 
 
+def _time_ago(timestamp_str):
+    """Helper to convert timestamp string to 'X days ago' format."""
+    try:
+        dt = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
+        now = datetime.now()
+        diff = now - dt
+
+        if diff.days > 0:
+            return f"{diff.days} days ago"
+        hours = diff.seconds // 3600
+        if hours > 0:
+            return f"{hours} hours ago"
+        minutes = (diff.seconds % 3600) // 60
+        return f"{minutes} mins ago"
+    except (ValueError, TypeError):
+        return "-"
+
+
 def render_model_registry_tab():
-    """Placeholder for the Model Registry tab."""
-    st.markdown("""
-    <div class="placeholder-page">
-        <h2>📦 Model Registry</h2>
-        <p>Model version management and deployment history will be displayed here.</p>
-    </div>
-    """, unsafe_allow_html=True)
+    """Renders the Model Registry tab."""
+    # st.markdown('<div class="section-title">Model Registry</div>', unsafe_allow_html=True) # Already in tab header potentially? No, dashboard has Overview section title.
+
+    if not REGISTRY_AVAILABLE:
+        st.error("Model Registry service is not available.")
+        return
+
+    registry = ModelRegistry()
+
+    # --- Data Fetching ---
+    total_versions = registry.get_version_count()
+    current_prod = registry.get_current_production()
+
+    # Calculate stats
+    prod_version = current_prod['version'] if current_prod else "-"
+    last_deploy_ts = current_prod['deployment_timestamp'] if current_prod else None
+    last_deploy_str = _time_ago(last_deploy_ts) if last_deploy_ts else "-"
+
+    # Avg Accuracy from recent history
+    history = registry.get_metrics_trend(limit=20)
+    accuracies = [m.get('accuracy', 0) for m in history if 'accuracy' in m]
+
+    avg_acc_str = "-"
+    if accuracies:
+        avg_acc = sum(accuracies) / len(accuracies)
+        avg_acc_str = f"{avg_acc:.1%}"
+
+
+    # --- Header Metrics & Buttons ---
+    col1, col2, col3, col4, col5 = st.columns([1, 1, 1, 1, 1.2])
+
+    with col1:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Total Versions:</div>
+            <div class="metric-value">{total_versions}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col2:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Currently Deployed:</div>
+            <div class="metric-value">{prod_version}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col3:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Last Deployment:</div>
+            <div class="metric-value" style="font-size:1.4rem;">{last_deploy_str}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col4:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Avg. Accuracy:</div>
+            <div class="metric-value">{avg_acc_str}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col5:
+        # Action Buttons
+        st.markdown("""
+        <style>
+        div.stButton > button {
+            width: 100%;
+            border-radius: 6px;
+            font-weight: 600;
+            padding: 0.5rem 1rem;
+        }
+        /* Primary Action Button (Blue) */
+        div.stButton > button:first-child {
+            background-color: #2563eb;
+            color: white;
+            border: none;
+        }
+        div.stButton > button:first-child:hover {
+            background-color: #1d4ed8;
+            border: none;
+            color: white;
+        }
+        /* Secondary Action Button (Retrain) */
+        div.stButton > button:nth-child(2) {
+            background-color: #334155;
+            color: #cbd5e1;
+            border: 1px solid #475569;
+            margin-top: 5px;
+        }
+        div.stButton > button:nth-child(2):hover {
+            border-color: #64748b;
+            color: white;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
+        if st.button("Register New Model", use_container_width=True):
+            st.toast("Registration wizard coming soon!", icon="🚧")
+
+        if st.button("Retrain", use_container_width=True):
+            st.toast("Retraining triggered!", icon="🚀")
+
+    st.markdown("---")
+
+    # --- Main Content Area ---
+    st.subheader("Model Version History")
+
+    # Check if empty state
+    if total_versions == 0:
+        # Empty State UI
+        st.markdown("""
+        <div style="display:flex; flex-direction:column; align-items:center; justify-content:center;
+                    padding:3rem; background-color:#1e293b; border:1px solid #334155; border-radius:10px; text-align:center;">
+            <div style="font-size:4rem; margin-bottom:1rem;">📂</div>
+            <h3 style="color:#f1f5f9; margin-bottom:0.5rem;">No Models Registered</h3>
+            <p style="color:#94a3b8; margin-bottom:1.5rem;">Get started by registering your first model.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        # We don't render the Register button inside the empty state because it's already at top right
+
+    else:
+        # Populated Table View
+        all_versions = registry.get_history(limit=50)
+
+        # Search Filter
+        search_query = st.text_input("Search Versions...", placeholder="Filter by version, status, or source...", label_visibility="collapsed")
+
+        if search_query:
+            query = search_query.lower()
+            all_versions = [v for v in all_versions if
+                            query in v['version'].lower() or
+                            query in v['status'].lower() or
+                            query in v['source'].lower()]
+
+        # Table Header
+        header_html = """
+        <div style="display:grid; grid-template-columns: 0.8fr 1fr 1.5fr 1.2fr 2fr 1.5fr 1fr;
+                    background:#334155; padding:0.75rem 1rem; border-radius:8px 8px 0 0;
+                    font-weight:600; color:#f1f5f9; font-size:0.9rem;">
+            <div>Version</div>
+            <div>Status</div>
+            <div>Registered At</div>
+            <div>Source</div>
+            <div>Training Metrics</div>
+            <div>Validation (Decay)</div>
+            <div>Actions</div>
+        </div>
+        """
+
+        rows_html = ""
+        for v in all_versions:
+            # Status Badge
+            status = v['status'].upper()
+            status_color = "#64748b" # Default Gray
+            if status == "VALIDATED": status_color = "#15803d" # Green
+            elif status == "DEPLOYED": status_color = "#0369a1" # Blue
+            elif status == "REJECTED": status_color = "#b91c1c" # Red
+
+            badge_html = f'<span style="background:{status_color}; padding:2px 8px; border-radius:4px; font-size:0.75rem; color:white; font-weight:600;">{v["status"].title()}</span>'
+
+            # Metrics Formatting
+            metrics = v.get('training_metrics_json', {}) or {}
+            acc = metrics.get('accuracy')
+            loss = metrics.get('loss')
+            metrics_str = f"Acc: {acc:.1%}, Loss: {loss:.2f}" if acc is not None else "-"
+
+            # Validation Formatting
+            decay = v.get('decay_metrics_json', {}) or {}
+            score = decay.get('score')
+            val_str = f"Score: {score:.2f}" if score is not None else "-"
+
+            # Actions
+            actions_html = '<a href="#" style="color:#60a5fa; text-decoration:none; margin-right:8px;">Details</a>'
+            if status == "VALIDATED":
+                 actions_html = '<a href="#" style="color:#60a5fa; text-decoration:none; margin-right:8px;">Deploy</a> | ' + actions_html
+
+            rows_html += f"""
+            <div style="display:grid; grid-template-columns: 0.8fr 1fr 1.5fr 1.2fr 2fr 1.5fr 1fr;
+                        padding:0.75rem 1rem; border-bottom:1px solid #334155;
+                        color:#cbd5e1; font-size:0.9rem; align-items:center;">
+                <div style="font-weight:600; color:#f1f5f9;">{v['version']}</div>
+                <div>{badge_html}</div>
+                <div>{v['registered_at']}</div>
+                <div>{v['source']}</div>
+                <div>{metrics_str}</div>
+                <div>{val_str}</div>
+                <div>{actions_html}</div>
+            </div>
+            """
+
+        full_table_html = f"""
+        <div style="background:#1e293b; border:1px solid #334155; border-radius:10px; margin-top:0.5rem; overflow:hidden;">
+            {header_html}
+            <div style="max-height:600px; overflow-y:auto;">
+                {rows_html}
+            </div>
+            <div style="padding:0.75rem 1rem; background:#1e293b; border-top:1px solid #334155; text-align:right; color:#64748b; font-size:0.85rem;">
+                Showing {len(all_versions)} versions
+            </div>
+        </div>
+        """
+
+        components.html(full_table_html, height=min(600, 100 + len(all_versions)*50), scrolling=True)
 
 
 def render_settings_tab():
-    """Placeholder for the Settings tab."""
-    st.markdown("""
-    <div class="placeholder-page">
-        <h2>⚙️ Settings</h2>
-        <p>Configuration and preferences will be displayed here.</p>
-    </div>
-    """, unsafe_allow_html=True)
+    """Renders the Settings tab (Placeholder)."""
+    st.markdown('<div class="section-title">Settings</div>', unsafe_allow_html=True)
+    
+    st.info("⚠️ Configuration management is coming in the next release.")
+    
+    st.subheader("System Configuration")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("##### Monitoring Intervals")
+        st.number_input("Drift Check Interval (hours)", value=24, disabled=True)
+        st.number_input("Retraining Check Interval (days)", value=7, disabled=True)
+        
+    with col2:
+        st.markdown("##### Notification Settings")
+        st.checkbox("Enable Email Alerts", value=True, disabled=True)
+        st.text_input("Alert Recipient", value="admin@sentinel.ai", disabled=True)
+        
+    st.markdown("---")
+    st.button("Save Changes", disabled=True)
 
 
 # ╔══════════════════════════════════════════════════════════════╗
